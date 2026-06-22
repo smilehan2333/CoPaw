@@ -414,7 +414,7 @@ export default function MySkillsPage() {
       setIsEditing(false);
       message.success("保存成功，可新开会话试一试效果。");
 
-      // 重新读取文件内容（后端可能更新了 frontmatter 中的 version 等字段）
+      // 重新读取文件内容，确保展示与后端保存结果一致
       try {
         const res = await mySkillsApi.readSkillFile(selectedSkill.skill_name, selectedFile);
         setFileContent(res.content);
