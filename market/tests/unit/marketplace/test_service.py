@@ -20,6 +20,293 @@ def _make_service(tmp_path, mock_db=None):
     )
 
 
+def _create_user_skill_for_save(
+    tmp_path,
+    *,
+    skill_name="demo_skill",
+    skill_md="---\nname: demo_skill\ndescription: Demo skill\n---\n\nBody.\n",
+    files=None,
+    skill_json=None,
+    manifest_version_text="",
+    user_id="user-1",
+    source_id="source-1",
+    agent_id="default",
+):
+    from market.marketplace.fs import (
+        get_user_skill_manifest_path,
+        get_user_skills_dir,
+    )
+
+    skills_dir = get_user_skills_dir(
+        tmp_path / "swe",
+        user_id,
+        agent_id,
+        source_id,
+    )
+    skill_dir = skills_dir / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+    for relative_path, content in (files or {}).items():
+        target = skill_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    if skill_json is not None:
+        if isinstance(skill_json, str):
+            skill_json_content = skill_json
+        else:
+            skill_json_content = json.dumps(
+                skill_json,
+                ensure_ascii=False,
+                indent=2,
+            )
+        (skill_dir / "skill.json").write_text(
+            skill_json_content,
+            encoding="utf-8",
+        )
+
+    metadata = {
+        "name": skill_name,
+        "description": "Demo skill",
+    }
+    if manifest_version_text:
+        metadata["version_text"] = manifest_version_text
+
+    manifest_path = get_user_skill_manifest_path(
+        tmp_path / "swe",
+        user_id,
+        agent_id,
+        source_id,
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "workspace-skill-manifest.v1",
+                "version": 1,
+                "skills": {
+                    skill_name: {
+                        "source": "customized",
+                        "metadata": metadata,
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    return skill_dir, manifest_path
+
+
+def test_save_skill_file_does_not_add_version_to_skill_md(tmp_path):
+    svc = _make_service(tmp_path)
+    skill_dir, manifest_path = _create_user_skill_for_save(tmp_path)
+
+    submitted_content = (
+        "---\n"
+        "name: demo_skill\n"
+        "description: Changed demo skill\n"
+        "---\n\n"
+        "Changed body.\n"
+    )
+
+    ok = svc.save_skill_file(
+        "user-1",
+        "demo_skill",
+        "SKILL.md",
+        submitted_content,
+        user_name="User One",
+        source_id="source-1",
+    )
+
+    assert ok is True
+    saved_skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert saved_skill_md == submitted_content
+    assert "version:" not in saved_skill_md
+
+    skill_json = json.loads(
+        (skill_dir / "skill.json").read_text(encoding="utf-8"),
+    )
+    assert skill_json["version"] == "1.0.1"
+    assert "updated_at" in skill_json
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    metadata = manifest["skills"]["demo_skill"]["metadata"]
+    assert metadata["version_text"] == "1.0.1"
+    assert "updated_at" in metadata
+    assert "updated_at" in manifest["skills"]["demo_skill"]
+
+
+def test_save_skill_file_does_not_touch_skill_md_when_other_file_changes(
+    tmp_path,
+):
+    svc = _make_service(tmp_path)
+    original_skill_md = (
+        "---\n"
+        "name: demo_skill\n"
+        "description: Demo skill\n"
+        "---\n\n"
+        "Body.\n"
+    )
+    skill_dir, manifest_path = _create_user_skill_for_save(
+        tmp_path,
+        skill_md=original_skill_md,
+        files={"references/foo.md": "old reference\n"},
+        skill_json={
+            "name": "demo_skill",
+            "version": "2.0.0",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        },
+        manifest_version_text="1.9.9",
+    )
+
+    ok = svc.save_skill_file(
+        "user-1",
+        "demo_skill",
+        "references/foo.md",
+        "new reference\n",
+        user_name="User One",
+        source_id="source-1",
+    )
+
+    assert ok is True
+    assert (skill_dir / "SKILL.md").read_text(
+        encoding="utf-8",
+    ) == original_skill_md
+    assert (skill_dir / "references" / "foo.md").read_text(
+        encoding="utf-8",
+    ) == "new reference\n"
+
+    skill_json = json.loads(
+        (skill_dir / "skill.json").read_text(encoding="utf-8"),
+    )
+    assert skill_json["version"] == "2.0.1"
+    assert skill_json["created_at"] == "2026-01-01T00:00:00+00:00"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert (
+        manifest["skills"]["demo_skill"]["metadata"]["version_text"] == "2.0.1"
+    )
+
+
+def test_save_skill_file_preserves_existing_skill_md_version_and_uses_it_as_fallback(
+    tmp_path,
+):
+    svc = _make_service(tmp_path)
+    original_skill_md = (
+        "---\n"
+        "name: demo_skill\n"
+        "description: Demo skill\n"
+        "version: 1.2.3\n"
+        "---\n\n"
+        "Body.\n"
+    )
+    skill_dir, manifest_path = _create_user_skill_for_save(
+        tmp_path,
+        skill_md=original_skill_md,
+        files={"scripts/run.py": "print('old')\n"},
+    )
+
+    ok = svc.save_skill_file(
+        "user-1",
+        "demo_skill",
+        "scripts/run.py",
+        "print('new')\n",
+        user_name="User One",
+        source_id="source-1",
+    )
+
+    assert ok is True
+    assert (skill_dir / "SKILL.md").read_text(
+        encoding="utf-8",
+    ) == original_skill_md
+
+    skill_json = json.loads(
+        (skill_dir / "skill.json").read_text(encoding="utf-8"),
+    )
+    assert skill_json["version"] == "1.2.4"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert (
+        manifest["skills"]["demo_skill"]["metadata"]["version_text"] == "1.2.4"
+    )
+
+
+def test_save_skill_file_same_content_does_not_bump_metadata_version(tmp_path):
+    svc = _make_service(tmp_path)
+    skill_md = (
+        "---\n"
+        "name: demo_skill\n"
+        "description: Demo skill\n"
+        "---\n\n"
+        "Body.\n"
+    )
+    skill_dir, manifest_path = _create_user_skill_for_save(
+        tmp_path,
+        skill_md=skill_md,
+        skill_json={"name": "demo_skill", "version": "3.0.0"},
+        manifest_version_text="3.0.0",
+    )
+    skill_json_before = (skill_dir / "skill.json").read_text(encoding="utf-8")
+    manifest_before = manifest_path.read_text(encoding="utf-8")
+
+    ok = svc.save_skill_file(
+        "user-1",
+        "demo_skill",
+        "SKILL.md",
+        skill_md,
+        user_name="User One",
+        source_id="source-1",
+    )
+
+    assert ok is True
+    assert (skill_dir / "skill.json").read_text(
+        encoding="utf-8",
+    ) == skill_json_before
+    assert manifest_path.read_text(encoding="utf-8") == manifest_before
+
+
+def test_save_skill_file_preserves_malformed_skill_json(tmp_path):
+    svc = _make_service(tmp_path)
+    skill_dir, manifest_path = _create_user_skill_for_save(
+        tmp_path,
+        skill_json="not a valid json",
+        manifest_version_text="4.0.0",
+    )
+    submitted_content = (
+        "---\n"
+        "name: demo_skill\n"
+        "description: Demo skill changed\n"
+        "---\n\n"
+        "Changed body.\n"
+    )
+
+    ok = svc.save_skill_file(
+        "user-1",
+        "demo_skill",
+        "SKILL.md",
+        submitted_content,
+        user_name="User One",
+        source_id="source-1",
+    )
+
+    assert ok is True
+    assert (skill_dir / "SKILL.md").read_text(
+        encoding="utf-8",
+    ) == submitted_content
+    assert (skill_dir / "skill.json").read_text(
+        encoding="utf-8",
+    ) == "not a valid json"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert (
+        manifest["skills"]["demo_skill"]["metadata"]["version_text"] == "4.0.1"
+    )
+
+
 @pytest.mark.asyncio
 async def test_publish_skill_creates_index_entry(tmp_path):
     from market.marketplace.schemas import PublishSkillRequest
@@ -33,7 +320,7 @@ async def test_publish_skill_creates_index_entry(tmp_path):
         skill_json={"name": "skill_a"},
         skill_md="# Skill A",
     )
-    item = await svc.publish_skill("src_a", req)
+    item, _ = await svc.publish_skill("src_a", req)
     assert item.name == "skill_a"
     assert item.version == "1.0.0"
     assert item.status == "active"
@@ -58,11 +345,12 @@ async def test_publish_skill_increments_version_on_republish(tmp_path):
         skill_json={},
         skill_md="# v1",
     )
-    item1 = await svc.publish_skill("src_a", req1)
+    item1, _ = await svc.publish_skill("src_a", req1)
     assert item1.version == "1.0.0"
 
     # 同样内容再 publish 一次 → R7 no-op，版本不动
-    item_same = await svc.publish_skill("src_a", req1)
+    req1.overwrite = True
+    item_same, _ = await svc.publish_skill("src_a", req1)
     assert (
         item_same.version == "1.0.0"
     ), "内容未变化时市场版本不应 bump（R7 no-op）"
@@ -75,8 +363,9 @@ async def test_publish_skill_increments_version_on_republish(tmp_path):
         creator_name="",
         skill_json={},
         skill_md="# v2 changed",
+        overwrite=True,
     )
-    item2 = await svc.publish_skill("src_a", req2)
+    item2, _ = await svc.publish_skill("src_a", req2)
     assert item2.version == "1.0.1", "内容变化时市场版本应自动 bump"
 
 
@@ -93,7 +382,7 @@ async def test_unpublish_skill_sets_inactive(tmp_path):
         skill_json={},
         skill_md="",
     )
-    item = await svc.publish_skill("src_a", req)
+    item, _ = await svc.publish_skill("src_a", req)
     await svc.unpublish_skill("src_a", item.item_id, "u1", "User One")
     items = await svc.list_skills("src_a", user_bbk_id="100")
     assert all(
@@ -150,7 +439,7 @@ async def test_get_skill_detail_returns_item(tmp_path):
         skill_json={},
         skill_md="",
     )
-    item = await svc.publish_skill("src_a", req)
+    item, _ = await svc.publish_skill("src_a", req)
     detail = await svc.get_skill_detail(
         "src_a",
         item.item_id,
@@ -301,7 +590,7 @@ async def test_get_my_skills_reads_frontmatter_and_market_metadata(tmp_path):
     source_id = "test_source"
     agent_id = "default"
 
-    published = await svc.publish_skill(
+    published, _ = await svc.publish_skill(
         source_id,
         PublishSkillRequest(
             name="Market Skill",
@@ -527,9 +816,9 @@ async def test_publish_skill_appends_version_for_different_user(tmp_path):
         skill_json={"name": "demo"},
         skill_md='---\nname: demo\nversion: "1.0.0"\n---\n',
     )
-    item_a = await svc.publish_skill("src_a", req_a)
+    item_a, _ = await svc.publish_skill("src_a", req_a)
 
-    # 用户 B 同名同步（不同 creator_id），不传 overwrite
+    # 用户 B 同名同步（不同 creator_id），确认覆盖后续接
     req_b = PublishSkillRequest(
         name="demo",
         description="b",
@@ -537,8 +826,9 @@ async def test_publish_skill_appends_version_for_different_user(tmp_path):
         creator_name="Bob",
         skill_json={"name": "demo"},
         skill_md='---\nname: demo\nversion: "2.0.0"\n---\n',
+        overwrite=True,
     )
-    item_b = await svc.publish_skill("src_a", req_b)
+    item_b, _ = await svc.publish_skill("src_a", req_b)
 
     # 续接到同一个 item_id
     assert item_b.item_id == item_a.item_id
@@ -568,7 +858,7 @@ async def test_publish_skill_records_source_user_from_creator(tmp_path):
         skill_json={"name": "demo"},
         skill_md='---\nname: demo\nversion: "1.5.2"\n---\nbody',
     )
-    item = await svc.publish_skill(
+    item, _ = await svc.publish_skill(
         "src_a",
         req,
         operator_id="admin_id",
@@ -595,7 +885,7 @@ async def test_publish_mcp_appends_for_different_user(tmp_path):
     svc = _make_service(tmp_path)
 
     # alice 首发（本地版本 1.0.0 → 市场首版 1.0.0）
-    item_a = await svc.publish_mcp(
+    item_a, _ = await svc.publish_mcp(
         "src_a",
         PublishMCPRequest(
             client_key="m1",
@@ -609,7 +899,7 @@ async def test_publish_mcp_appends_for_different_user(tmp_path):
     )
 
     # bob 同名同步（本地版本 2.0.0，但市场版本独立 _bump_patch 到 1.0.1）
-    item_b = await svc.publish_mcp(
+    item_b, _ = await svc.publish_mcp(
         "src_a",
         PublishMCPRequest(
             client_key="m1",
@@ -619,6 +909,7 @@ async def test_publish_mcp_appends_for_different_user(tmp_path):
             creator_name="Bob",
             config={"name": "demo_mcp", "transport": "stdio", "command": "/b"},
             version="2.0.0",
+            overwrite=True,
         ),
     )
 
@@ -650,7 +941,7 @@ async def test_publish_mcp_admin_zip_source_user_empty(tmp_path):
 
     svc = _make_service(tmp_path)
 
-    item = await svc.publish_mcp(
+    item, _ = await svc.publish_mcp(
         "src_a",
         PublishMCPRequest(
             client_key="m2",

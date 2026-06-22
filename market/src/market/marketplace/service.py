@@ -1608,55 +1608,41 @@ class MarketplaceService:
         )
         return _read_preview_file(skill_dir, file_path)
 
-    def _bump_skill_version_in_frontmatter(
+    def _resolve_next_skill_metadata_version(
         self,
         skill_dir: Path,
+        manifest_version: str = "",
     ) -> str:
-        """Bump SKILL.md frontmatter 中的 version 字段，返回新版本号."""
-        skill_md_path = skill_dir / "SKILL.md"
-        if not skill_md_path.exists():
-            return "1.0.1"
+        """Return the next system metadata version without rewriting SKILL.md."""
+        base_version = ""
+        skill_json_path = skill_dir / "skill.json"
+        if skill_json_path.exists():
+            try:
+                skill_data = json.loads(
+                    skill_json_path.read_text(encoding="utf-8"),
+                )
+                raw_version = skill_data.get("version")
+                if raw_version not in (None, ""):
+                    base_version = str(raw_version).strip()
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(
+                    "Failed to read skill.json version for %s: %s",
+                    skill_json_path,
+                    e,
+                )
 
-        try:
-            md_content = skill_md_path.read_text(encoding="utf-8")
-        except OSError:
-            return "1.0.1"
+        if not base_version and manifest_version:
+            base_version = str(manifest_version).strip()
 
-        current_version = (
-            _extract_version_from_frontmatter(md_content) or "1.0.0"
-        )
-        new_version = _bump_patch(current_version)
+        if not base_version:
+            skill_md_path = skill_dir / "SKILL.md"
+            try:
+                md_content = skill_md_path.read_text(encoding="utf-8")
+                base_version = _extract_version_from_frontmatter(md_content)
+            except OSError:
+                base_version = ""
 
-        # 替换 frontmatter 中的 version 行
-        try:
-            end_idx = md_content.index("---", 3)
-        except ValueError:
-            return new_version
-
-        fm_text = md_content[3:end_idx]
-        lines = fm_text.split("\n")
-        replaced = False
-        for i, line in enumerate(lines):
-            if ":" in line:
-                key, _ = line.split(":", 1)
-                if key.strip().lower() == "version":
-                    lines[i] = f"version: {new_version}"
-                    replaced = True
-                    break
-
-        if not replaced:
-            # frontmatter 中没有 version 行，追加
-            lines.append(f"version: {new_version}")
-
-        new_fm = "\n".join(lines)
-        new_content = f"---\n{new_fm}\n---{md_content[end_idx + 3 :]}"
-
-        try:
-            skill_md_path.write_text(new_content, encoding="utf-8")
-        except OSError as e:
-            logger.warning("Failed to bump version in SKILL.md: %s", e)
-
-        return new_version
+        return _bump_patch(base_version or "1.0.0")
 
     def _bump_skill_version_in_manifest(
         self,
@@ -1701,8 +1687,8 @@ class MarketplaceService:
         """保存技能文件内容，自动创建 skill.json（如不存在）.
 
         如果新内容与现有内容一致，则跳过写入和版本更新。
-        只有内容发生变化时，才 bump SKILL.md frontmatter 中的 version 字段
-        和 manifest 的 version_text，确保版本号与实际编辑同步。
+        只有内容发生变化时，才 bump 系统元数据版本；不会为了版本管理
+        改写用户维护的 SKILL.md frontmatter。
         """
         skills_dir = get_user_skills_dir(
             self.swe_root,
@@ -1735,9 +1721,22 @@ class MarketplaceService:
             target.write_text(content, encoding="utf-8")
 
             current_time = datetime.now(timezone.utc).isoformat()
+            manifest = read_user_skill_manifest(
+                self.swe_root,
+                user_id,
+                agent_id,
+                source_id,
+            )
+            manifest_entry = manifest.get("skills", {}).get(skill_name) or {}
+            manifest_metadata = manifest_entry.get("metadata") or {}
+            manifest_version = str(
+                manifest_metadata.get("version_text", "") or "",
+            )
 
-            # bump SKILL.md frontmatter 中的 version 字段
-            new_version = self._bump_skill_version_in_frontmatter(skill_dir)
+            new_version = self._resolve_next_skill_metadata_version(
+                skill_dir,
+                manifest_version,
+            )
 
             # 处理 skill.json：自动创建或更新
             skill_json_path = skill_dir / "skill.json"
@@ -1768,6 +1767,7 @@ class MarketplaceService:
                     "creator_id": user_id,
                     "creator_name": user_name or "",
                     "created_at": current_time,
+                    "updated_at": current_time,
                     "source": "customized",
                 }
                 try:
