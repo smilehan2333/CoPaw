@@ -234,6 +234,13 @@ def _bump_patch(version: str) -> str:
     return _shared_bump_patch(version)
 
 
+def _normalize_version_text(value: Any) -> str:
+    """将任意版本字段归一化为空或非空字符串."""
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
 def _decode_creator_name(value: str) -> str:
     """解码通过请求头传入的创建人名称，并兼容历史已编码数据。"""
     if not value:
@@ -426,13 +433,6 @@ def _copy_skill_files(
             if skill_dir.exists():
                 shutil.rmtree(skill_dir)
             shutil.copytree(src_skill_dir, skill_dir)
-            # 删除复制过来的 skill.json（不再需要）
-            skill_json_path = skill_dir / "skill.json"
-            if skill_json_path.exists():
-                try:
-                    skill_json_path.unlink()
-                except OSError:
-                    pass
             logger.info(
                 "Copied entire skill directory from %s to %s",
                 src_skill_dir,
@@ -896,18 +896,20 @@ class MarketplaceService:
         # 创建版本快照
         # source_user_*：内容来源是 req.creator_*（PublishSkillRequest 显式指定）
         # created_by_*：操作者（admin），未传则与 source_user 相同（向后兼容）
-        # source_user_version 优先使用请求中传入的值（前端从 manifest 获取），
-        # 其次从 SKILL.md frontmatter 提取（兼容旧调用方或不传的场景）。
-        source_user_version = req.source_user_version
-        if not source_user_version:
-            skill_md_path = skill_dir / "SKILL.md"
-            if skill_md_path.exists():
-                try:
-                    source_user_version = _extract_version_md(
-                        skill_md_path.read_text(encoding="utf-8"),
-                    )
-                except OSError:
-                    pass
+        # source_user_version 优先使用请求中传入的值；未传时按用户元数据、
+        # skill.json、SKILL.md 只读回退，且不制造默认版本号。
+        manifest_metadata = self._get_source_skill_manifest_metadata(
+            source_id,
+            req,
+        )
+        source_user_version = (
+            req.source_user_version
+            or self._resolve_user_skill_version(
+                skill_dir=skill_dir,
+                manifest_metadata=manifest_metadata,
+                skill_json=req.skill_json,
+            )
+        )
 
         version_svc = SkillVersionService(self.marketplace_root)
         version_unchanged = False
@@ -1286,7 +1288,7 @@ class MarketplaceService:
         数据来源：
         - name、description：从 SKILL.md frontmatter 读取
         - source、distributed_by、received_version 等：从 workspace manifest 读取
-        - 不再依赖技能目录内的 skill.json 文件
+        - version：优先从 manifest，随后从 skill.json / SKILL.md 兼容回退
         """
         skills_dir = get_user_skills_dir(
             self.swe_root,
@@ -1345,6 +1347,80 @@ class MarketplaceService:
         version = _extract_version_from_frontmatter(md_content)
         return name, desc, version
 
+    def _resolve_user_skill_version(
+        self,
+        *,
+        skill_dir: Path,
+        manifest_metadata: dict[str, Any] | None = None,
+        skill_json: dict[str, Any] | None = None,
+    ) -> str:
+        """只读解析用户技能版本；找不到真实来源时返回空字符串."""
+        manifest_metadata = manifest_metadata or {}
+        version = _normalize_version_text(
+            manifest_metadata.get("version_text"),
+        )
+        if version:
+            return version
+
+        if isinstance(skill_json, dict):
+            version = _normalize_version_text(skill_json.get("version"))
+            if version:
+                return version
+
+        skill_json_path = skill_dir / "skill.json"
+        if skill_json_path.exists():
+            try:
+                file_skill_json = json.loads(
+                    skill_json_path.read_text(encoding="utf-8"),
+                )
+                if isinstance(file_skill_json, dict):
+                    version = _normalize_version_text(
+                        file_skill_json.get("version"),
+                    )
+                    if version:
+                        return version
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        skill_md_path = skill_dir / "SKILL.md"
+        if skill_md_path.exists():
+            try:
+                return _normalize_version_text(
+                    _extract_version_from_frontmatter(
+                        skill_md_path.read_text(encoding="utf-8"),
+                    ),
+                )
+            except OSError:
+                pass
+
+        return ""
+
+    def _get_source_skill_manifest_metadata(
+        self,
+        source_id: str,
+        req: PublishSkillRequest,
+    ) -> dict[str, Any]:
+        """读取来源用户 workspace manifest 中的技能元数据；失败时返回空 dict."""
+        if not req.skill_name:
+            return {}
+        try:
+            manifest = read_user_skill_manifest(
+                self.swe_root,
+                req.creator_id,
+                req.agent_id,
+                source_id,
+            )
+        except Exception:  # pylint: disable=broad-except
+            return {}
+
+        manifest_entry = manifest.get("skills", {}).get(req.skill_name)
+        if not isinstance(manifest_entry, dict):
+            return {}
+        manifest_metadata = manifest_entry.get("metadata")
+        if not isinstance(manifest_metadata, dict):
+            return {}
+        return manifest_metadata
+
     def _resolve_skill_display_fields(
         self,
         skill_dir: Path,
@@ -1352,14 +1428,16 @@ class MarketplaceService:
         manifest_metadata: dict[str, Any],
     ) -> tuple[str, str, str]:
         """合并 manifest 与 frontmatter，得到展示名称、描述和版本号."""
-        md_name, md_desc, md_version = self._read_skill_frontmatter(
+        md_name, md_desc, _md_version = self._read_skill_frontmatter(
             skill_dir,
             skill_name,
         )
         display_name = manifest_metadata.get("name") or md_name
         description = manifest_metadata.get("description") or md_desc
-        # 版本号优先使用 manifest_metadata，其次 frontmatter
-        version = manifest_metadata.get("version_text") or md_version
+        version = self._resolve_user_skill_version(
+            skill_dir=skill_dir,
+            manifest_metadata=manifest_metadata,
+        )
         return display_name, description, version
 
     def _resolve_skill_timestamps(

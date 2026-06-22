@@ -37,6 +37,9 @@ _IGNORED_ARTIFACTS = {
     ".git",
 }
 
+# 仅用于版本比对展示；不要用于签名、快照复制或版本详情文件树。
+_COMPARE_EXCLUDED_FILES = {"skill.json"}
+
 
 class SkillVersionService:
     """技能版本管理服务.
@@ -398,9 +401,13 @@ class SkillVersionService:
         if not target_dir.exists():
             raise ValueError(f"Target version {target_version_id} not found")
 
-        # 收集两个版本的文件
-        base_files = self._collect_skill_files(base_dir)
-        target_files = self._collect_skill_files(target_dir)
+        # 收集两个版本的文件；skill.json 是系统元数据，版本比对展示中不显示。
+        base_files = (
+            self._collect_skill_files(base_dir) - _COMPARE_EXCLUDED_FILES
+        )
+        target_files = (
+            self._collect_skill_files(target_dir) - _COMPARE_EXCLUDED_FILES
+        )
 
         # 计算差异
         added_files = target_files - base_files
@@ -960,8 +967,12 @@ class SkillVersionService:
         Returns:
             {"changed_files": int, "added_lines": int, "deleted_lines": int}
         """
-        base_files = self._collect_skill_files(base_dir)
-        target_files = self._collect_skill_files(target_dir)
+        base_files = (
+            self._collect_skill_files(base_dir) - _COMPARE_EXCLUDED_FILES
+        )
+        target_files = (
+            self._collect_skill_files(target_dir) - _COMPARE_EXCLUDED_FILES
+        )
 
         added_files = target_files - base_files
         deleted_files = base_files - target_files

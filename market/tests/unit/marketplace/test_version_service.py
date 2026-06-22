@@ -348,6 +348,98 @@ line 3 added
     assert result.stats.deleted_lines >= 1
 
 
+def test_compare_versions_ignores_root_skill_json_changes(tmp_path):
+    """版本比对展示不应包含根目录 skill.json 的元数据差异."""
+    svc = _make_version_service(tmp_path)
+    skill_dir = _create_skill_dir(
+        tmp_path,
+        "src_a",
+        "item_1",
+        skill_md="# Same Skill\n",
+        skill_json={"name": "same", "version": "1.0.0"},
+    )
+
+    svc.create_version_snapshot(
+        source_id="src_a",
+        item_id="item_1",
+        skill_dir=skill_dir,
+        description="v1",
+        creator="user",
+        current_market_version="1.0.0",
+    )
+
+    (skill_dir / "skill.json").write_text(
+        json.dumps(
+            {"name": "same", "version": "1.0.1", "updated_at": "now"},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    svc.create_version_snapshot(
+        source_id="src_a",
+        item_id="item_1",
+        skill_dir=skill_dir,
+        description="v2",
+        creator="user",
+        current_market_version="1.0.1",
+    )
+
+    result = svc.compare_versions("src_a", "item_1", "1.0.0", "1.0.1")
+
+    paths = [file.path for file in result.files]
+    assert "skill.json" not in paths
+    assert "SKILL.md" in paths
+    assert result.stats.changed_files == 0
+    assert result.stats.added_lines == 0
+    assert result.stats.deleted_lines == 0
+
+    skill_md = next(file for file in result.files if file.path == "SKILL.md")
+    assert skill_md.diff == ""
+    assert skill_md.added_lines == 0
+    assert skill_md.deleted_lines == 0
+
+
+def test_generated_version_description_ignores_root_skill_json_changes(
+    tmp_path,
+):
+    """版本历史自动说明不应统计根目录 skill.json 的元数据差异."""
+    svc = _make_version_service(tmp_path)
+    skill_dir = _create_skill_dir(
+        tmp_path,
+        "src_a",
+        "item_1",
+        skill_md="# Same Skill\n",
+        skill_json={"name": "same", "version": "1.0.0"},
+    )
+
+    svc.create_version_snapshot(
+        source_id="src_a",
+        item_id="item_1",
+        skill_dir=skill_dir,
+        creator="user",
+        current_market_version="1.0.0",
+    )
+
+    (skill_dir / "skill.json").write_text(
+        json.dumps(
+            {"name": "same", "version": "1.0.1", "updated_at": "now"},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    version = svc.create_version_snapshot(
+        source_id="src_a",
+        item_id="item_1",
+        skill_dir=skill_dir,
+        creator="user",
+        current_market_version="1.0.1",
+    )
+
+    assert version.description == "无变更"
+
+
 def test_delete_version_removes_directory(tmp_path):
     """测试删除版本移除目录."""
     svc = _make_version_service(tmp_path)

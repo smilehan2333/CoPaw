@@ -52,17 +52,16 @@ function displayVersion(versionId: string): string {
 }
 
 /**
- * 把 SkillVersion 上的 source_user_* 拼成单行描述，避免与头部 version_id 重复。
+ * 把 SkillVersion 上的 source_user_version 拼成单行描述。
  *
+ * 市场版本和用户同步版本是独立语义，即使数值相同也展示用户同步版本。
  * 规则（仅展示"用户同步版本"）：
  * - 无 source_user_version 或 = "v0.0.0"（admin zip 路径） → 不显示
- * - source_user_version == 市场 version_id → 不显示（信息重复）
  * - 否则 → "用户同步版本 vX.Y.Z"
  */
 function describeSource(version: SkillVersion): string | null {
   const userVersion = version.source_user_version?.trim();
   if (!userVersion || userVersion === "v0.0.0") return null;
-  if (userVersion === version.version_id) return null;
   return `用户同步版本 ${displayVersion(userVersion)}`;
 }
 

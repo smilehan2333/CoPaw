@@ -308,6 +308,94 @@ def test_save_skill_file_preserves_malformed_skill_json(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_my_skills_falls_back_to_skill_json_version(tmp_path):
+    svc = _make_service(tmp_path)
+    _create_user_skill_for_save(
+        tmp_path,
+        skill_json={"name": "demo_skill", "version": "2.3.4"},
+    )
+
+    result = await svc.get_my_skills("source-1", "user-1", "default")
+
+    assert len(result) == 1
+    assert result[0].skill_name == "demo_skill"
+    assert result[0].version == "2.3.4"
+
+
+@pytest.mark.asyncio
+async def test_publish_skill_uses_request_skill_json_version(tmp_path):
+    from market.marketplace.schemas import PublishSkillRequest
+    from market.marketplace.version_service import SkillVersionService
+
+    svc = _make_service(tmp_path)
+    req = PublishSkillRequest(
+        name="demo",
+        description="d",
+        creator_id="alice",
+        creator_name="Alice",
+        skill_json={"name": "demo", "version": "2.0.1"},
+        skill_md="---\nname: demo\n---\nbody",
+    )
+
+    item, _ = await svc.publish_skill("src_a", req)
+
+    vsvc = SkillVersionService(tmp_path / "market")
+    snap = vsvc.list_versions("src_a", item.item_id)["versions"][0]
+    assert snap["source_user_version"] == "2.0.1"
+
+
+@pytest.mark.asyncio
+async def test_publish_skill_uses_workspace_manifest_version_text(tmp_path):
+    from market.marketplace.schemas import PublishSkillRequest
+    from market.marketplace.version_service import SkillVersionService
+
+    svc = _make_service(tmp_path)
+    _create_user_skill_for_save(
+        tmp_path,
+        manifest_version_text="3.0.1",
+        user_id="alice",
+        source_id="src_a",
+    )
+    req = PublishSkillRequest(
+        name="demo",
+        description="d",
+        creator_id="alice",
+        creator_name="Alice",
+        skill_json={"name": "demo"},
+        skill_md="",
+        skill_name="demo_skill",
+    )
+
+    item, _ = await svc.publish_skill("src_a", req)
+
+    vsvc = SkillVersionService(tmp_path / "market")
+    snap = vsvc.list_versions("src_a", item.item_id)["versions"][0]
+    assert snap["source_user_version"] == "3.0.1"
+
+
+@pytest.mark.asyncio
+async def test_publish_skill_without_real_source_version_stays_empty(tmp_path):
+    from market.marketplace.schemas import PublishSkillRequest
+    from market.marketplace.version_service import SkillVersionService
+
+    svc = _make_service(tmp_path)
+    req = PublishSkillRequest(
+        name="demo",
+        description="d",
+        creator_id="alice",
+        creator_name="Alice",
+        skill_json={"name": "demo"},
+        skill_md="---\nname: demo\n---\nbody",
+    )
+
+    item, _ = await svc.publish_skill("src_a", req)
+
+    vsvc = SkillVersionService(tmp_path / "market")
+    snap = vsvc.list_versions("src_a", item.item_id)["versions"][0]
+    assert snap["source_user_version"] == ""
+
+
+@pytest.mark.asyncio
 async def test_publish_skill_creates_index_entry(tmp_path):
     from market.marketplace.schemas import PublishSkillRequest
 
