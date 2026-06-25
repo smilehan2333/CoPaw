@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { Dropdown, Spin, Tooltip } from "antd";
 import { useAppMessage } from "../../../hooks/useAppMessage";
 import {
@@ -10,7 +10,7 @@ import { SparkDownLine } from "@agentscope-ai/icons";
 import { useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { providerApi } from "../../../api/modules/provider";
-import type { ProviderInfo, ActiveModelsInfo } from "../../../api/types";
+import { useProviderModelStore } from "../../../stores/providerModelStore";
 import styles from "./index.module.less";
 
 interface EligibleProvider {
@@ -21,11 +21,10 @@ interface EligibleProvider {
 
 export default function ModelSelector() {
   const { t } = useTranslation();
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [activeModels, setActiveModels] = useState<ActiveModelsInfo | null>(
-    null,
-  );
-  const [loading, setLoading] = useState(false);
+  const providers = useProviderModelStore((state) => state.providers);
+  const activeModels = useProviderModelStore((state) => state.activeModels);
+  const loading = useProviderModelStore((state) => state.loading);
+  const loadModelData = useProviderModelStore((state) => state.loadModelData);
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
   const savingRef = useRef(false);
@@ -33,23 +32,13 @@ export default function ModelSelector() {
   const { message } = useAppMessage();
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
     try {
       // Use tenant-level scope (agent scope deprecated)
-      const [provData, activeData] = await Promise.all([
-        providerApi.listProviders(),
-        providerApi.getActiveModels({
-          scope: "effective",
-        }),
-      ]);
-      if (Array.isArray(provData)) setProviders(provData);
-      if (activeData) setActiveModels(activeData);
+      await loadModelData({ scope: "effective" });
     } catch (err) {
       console.error("ModelSelector: failed to load data", err);
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  }, [loadModelData]);
 
   useEffect(() => {
     fetchData();
@@ -64,33 +53,30 @@ export default function ModelSelector() {
     const comingToChat = curr.startsWith("/chat") && !prev.startsWith("/chat");
     if (comingToChat) {
       // Use tenant-level scope (agent scope deprecated)
-      providerApi
-        .getActiveModels({
-          scope: "effective",
-        })
-        .then((activeData) => {
-          if (activeData) setActiveModels(activeData);
-        })
-        .catch(() => {});
+      loadModelData({ scope: "effective" }).catch(() => {});
     }
-  }, [location.pathname]);
+  }, [loadModelData, location.pathname]);
 
   // Eligible providers: configured + has models
-  const eligibleProviders: EligibleProvider[] = providers
-    .filter((p) => {
-      const hasModels =
-        (p.models?.length ?? 0) + (p.extra_models?.length ?? 0) > 0;
-      if (!hasModels) return false;
-      if (p.require_api_key === false) return !!p.base_url;
-      if (p.is_custom) return !!p.base_url;
-      if (p.require_api_key ?? true) return !!p.api_key;
-      return true;
-    })
-    .map((p) => ({
-      id: p.id,
-      name: p.name,
-      models: [...(p.models ?? []), ...(p.extra_models ?? [])],
-    }));
+  const eligibleProviders: EligibleProvider[] = useMemo(
+    () =>
+      providers
+        .filter((p) => {
+          const hasModels =
+            (p.models?.length ?? 0) + (p.extra_models?.length ?? 0) > 0;
+          if (!hasModels) return false;
+          if (p.require_api_key === false) return !!p.base_url;
+          if (p.is_custom) return !!p.base_url;
+          if (p.require_api_key ?? true) return !!p.api_key;
+          return true;
+        })
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          models: [...(p.models ?? []), ...(p.extra_models ?? [])],
+        })),
+    [providers],
+  );
 
   const activeProviderId = activeModels?.active_llm?.provider_id;
   const activeModelId = activeModels?.active_llm?.model;
@@ -108,21 +94,21 @@ export default function ModelSelector() {
     return activeModelId;
   })();
 
-  const handleOpenChange = useCallback(async (next: boolean) => {
-    setOpen(next);
-    if (next) {
-      // Re-fetch active model every time the dropdown opens
-      // Use tenant-level scope (agent scope deprecated)
-      try {
-        const activeData = await providerApi.getActiveModels({
-          scope: "effective",
-        });
-        if (activeData) setActiveModels(activeData);
-      } catch {
-        // ignore
+  const handleOpenChange = useCallback(
+    async (next: boolean) => {
+      setOpen(next);
+      if (next) {
+        // Re-fetch active model every time the dropdown opens
+        // Use tenant-level scope (agent scope deprecated)
+        try {
+          await loadModelData({ scope: "effective" });
+        } catch {
+          // ignore
+        }
       }
-    }
-  }, []);
+    },
+    [loadModelData],
+  );
 
   const handleSelect = async (providerId: string, modelId: string) => {
     if (savingRef.current) return;
@@ -139,9 +125,6 @@ export default function ModelSelector() {
         provider_id: providerId,
         model: modelId,
         scope: "global",
-      });
-      setActiveModels({
-        active_llm: { provider_id: providerId, model: modelId },
       });
       // Notify ChatPage to refresh multimodal capabilities
       window.dispatchEvent(new CustomEvent("model-switched"));

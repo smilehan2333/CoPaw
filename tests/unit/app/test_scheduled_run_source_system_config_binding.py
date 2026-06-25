@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +21,10 @@ from swe.app.crons.models import (
     DispatchTarget,
     JobRuntimeSpec,
     ScheduleSpec,
+)
+from swe.app.routers.dream_logs import (
+    ArchiveItem,
+    DreamArchiveMaintenanceResult,
 )
 from swe.app.source_system_config.models import (
     EffectiveSourceSystemConfig,
@@ -116,6 +122,29 @@ class _RecordingSourceConfigService:
         if self.error is not None:
             raise self.error
         return self.effective
+
+
+class _RecordingContinuousGovernanceService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.archive_calls: list[dict[str, object]] = []
+        self.delete_archive_calls: list[dict[str, object]] = []
+        self.audit_calls: list[dict[str, object]] = []
+
+    async def upsert_workspace_governance_record_with_health(
+        self,
+        **kwargs,
+    ) -> None:
+        self.calls.append(kwargs)
+
+    async def upsert_archive_items(self, **kwargs) -> None:
+        self.archive_calls.append(kwargs)
+
+    async def delete_archive_items(self, **kwargs) -> None:
+        self.delete_archive_calls.append(kwargs)
+
+    async def upsert_cleanup_audit(self, record) -> None:
+        self.audit_calls.append(record)
 
 
 @pytest.mark.asyncio
@@ -634,15 +663,161 @@ async def test_run_dream_binds_source_config_from_runtime_scope() -> None:
     assert get_current_source_system_config() is None
 
 
+@pytest.mark.asyncio
+async def test_run_dream_dual_writes_new_records_from_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope_id = encode_scope_id("tenant-a", "source-a")
+    workspace_dir = tmp_path / scope_id / "workspaces" / "default"
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "dream_logs.json").write_text(
+        json.dumps({"records": [{"id": "existing-record"}]}),
+        encoding="utf-8",
+    )
+    governance_service = _RecordingContinuousGovernanceService()
+
+    async def fake_dream_memory(**_kwargs):
+        (workspace_dir / "dream_logs.json").write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {"id": "existing-record"},
+                        {"id": "new-record", "status": "kept"},
+                    ],
+                },
+            ),
+            encoding="utf-8",
+        )
+
+    maintenance = DreamArchiveMaintenanceResult(
+        archived_items=[
+            ArchiveItem(
+                id="archive-1",
+                original_path="old.md",
+                archive_path="governance/archive/files/archive-1",
+                size_bytes=7,
+                mtime="2026-05-24T09:00:00Z",
+                archived_at="2026-05-25T09:00:00Z",
+                archived_by="dream_cron",
+                archive_reason="dream_auto_mtime_3_days",
+            ),
+        ],
+        purged_archive_item_ids=["archive-expired"],
+        purged_paths=["expired.md"],
+        purged_size_bytes=5,
+    )
+    monkeypatch.setattr(
+        "swe.app.routers.dream_logs.run_dream_archive_maintenance",
+        lambda *_args, **_kwargs: maintenance,
+    )
+    runner = SimpleNamespace(
+        workspace_dir=workspace_dir,
+        _workspace=None,
+        memory_manager=SimpleNamespace(dream_memory=fake_dream_memory),
+    )
+    manager = CronManager(
+        repo=object(),
+        runner=runner,
+        channel_manager=object(),
+        agent_id="default",
+        tenant_id=scope_id,
+        continuous_governance_service=governance_service,
+    )
+
+    await manager.run_dream()
+
+    assert len(governance_service.calls) == 1
+    call = cast(dict[str, Any], governance_service.calls[0])
+    assert call["source_id"] == "source-a"
+    assert call["target_user_id"] == "tenant-a"
+    assert call["target_agent_id"] == "default"
+    assert call["record"]["id"] == "new-record"
+    archive_call = cast(dict[str, Any], governance_service.archive_calls[0])
+    archive_items = cast(list[dict[str, Any]], archive_call["items"])
+    assert archive_call["source_id"] == "source-a"
+    assert archive_items[0]["original_path"] == "old.md"
+    delete_archive_call = cast(
+        dict[str, Any],
+        governance_service.delete_archive_calls[0],
+    )
+    assert delete_archive_call["archive_item_ids"] == [
+        "archive-expired",
+    ]
+    audit_call = cast(dict[str, Any], governance_service.audit_calls[0])
+    assert audit_call["operation"] == "purge_expired_archive"
+    assert audit_call["target_user_id"] == "tenant-a"
+
+
+@pytest.mark.asyncio
+async def test_run_dream_skips_governance_dual_write_for_overlong_agent_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cron agent 标识超过读模型字段长度时不执行治理 DB 双写。"""
+    scope_id = encode_scope_id("tenant-a", "source-a")
+    workspace_dir = tmp_path / scope_id / "workspaces" / "default"
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "dream_logs.json").write_text(
+        json.dumps({"records": []}),
+        encoding="utf-8",
+    )
+    governance_service = _RecordingContinuousGovernanceService()
+
+    async def fake_dream_memory(**_kwargs):
+        (workspace_dir / "dream_logs.json").write_text(
+            json.dumps({"records": [{"id": "new-record"}]}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "swe.app.routers.dream_logs.run_dream_archive_maintenance",
+        lambda *_args, **_kwargs: DreamArchiveMaintenanceResult(
+            archived_items=[
+                ArchiveItem(
+                    id="archive-1",
+                    original_path="old.md",
+                    archive_path="governance/archive/files/archive-1",
+                    size_bytes=7,
+                    mtime="2026-05-24T09:00:00Z",
+                    archived_at="2026-05-25T09:00:00Z",
+                    archived_by="dream_cron",
+                    archive_reason="dream_auto_mtime_3_days",
+                ),
+            ],
+        ),
+    )
+    runner = SimpleNamespace(
+        workspace_dir=workspace_dir,
+        _workspace=None,
+        memory_manager=SimpleNamespace(dream_memory=fake_dream_memory),
+    )
+    manager = CronManager(
+        repo=object(),
+        runner=runner,
+        channel_manager=object(),
+        agent_id="a" * 129,
+        tenant_id=scope_id,
+        continuous_governance_service=governance_service,
+    )
+
+    await manager.run_dream()
+
+    assert governance_service.calls == []
+    assert governance_service.archive_calls == []
+
+
 def test_workspace_registers_source_config_service_for_cron_manager(
     tmp_path: Path,
 ) -> None:
     service = object()
+    governance_service = object()
     workspace = Workspace(
         agent_id="default",
         workspace_dir=str(tmp_path / "tenant-a" / "workspaces" / "default"),
         tenant_id="tenant-a",
         source_system_config_service=service,
+        continuous_governance_service=governance_service,
     )
     workspace._service_manager.services["runner"] = (
         object()
@@ -654,6 +829,7 @@ def test_workspace_registers_source_config_service_for_cron_manager(
     init_args = cron_descriptor.init_args(workspace)
 
     assert init_args["source_system_config_service"] is service
+    assert init_args["continuous_governance_service"] is governance_service
 
 
 @pytest.mark.asyncio
@@ -661,7 +837,11 @@ async def test_multi_agent_manager_passes_source_config_service_to_workspace(
     tmp_path: Path,
 ) -> None:
     service = object()
-    manager = MultiAgentManager(source_system_config_service=service)
+    governance_service = object()
+    manager = MultiAgentManager(
+        source_system_config_service=service,
+        continuous_governance_service=governance_service,
+    )
     workspace_dir = tmp_path / "tenant-a" / "workspaces" / "default"
 
     with patch.object(
@@ -691,6 +871,7 @@ async def test_multi_agent_manager_passes_source_config_service_to_workspace(
         workspace_dir=str(workspace_dir),
         tenant_id="tenant-a",
         source_system_config_service=service,
+        continuous_governance_service=governance_service,
     )
 
 
@@ -699,9 +880,11 @@ async def test_tenant_workspace_pool_passes_source_config_service_to_workspace(
     tmp_path: Path,
 ) -> None:
     service = object()
+    governance_service = object()
     pool = TenantWorkspacePool(
         tmp_path / "tenants",
         source_system_config_service=service,
+        continuous_governance_service=governance_service,
     )
     fake_workspace = SimpleNamespace()
 
@@ -719,4 +902,5 @@ async def test_tenant_workspace_pool_passes_source_config_service_to_workspace(
         ),
         tenant_id="tenant-a",
         source_system_config_service=service,
+        continuous_governance_service=governance_service,
     )

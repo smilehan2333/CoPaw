@@ -133,6 +133,24 @@ describe("SessionApi identity mapping", () => {
     expect(list[0]?.name).toBe("new chat");
   });
 
+  it("loads a newly created local session without refreshing the chat list once", async () => {
+    const sessionApi = new SessionApi();
+
+    await sessionApi.createSession({
+      name: "new chat",
+      messages: [],
+    });
+
+    const logicalSessionId = sessionApi.getPendingSessionId();
+    expect(logicalSessionId).toBeTruthy();
+
+    const session = await sessionApi.getSession(logicalSessionId!);
+
+    expect(apiMocks.listChats).not.toHaveBeenCalled();
+    expect(session.id).toBe(logicalSessionId);
+    expect(session.name).toBe("new chat");
+  });
+
   it("keeps multiple pending local sessions when backend persistence has not caught up yet", async () => {
     const sessionApi = new SessionApi();
 
@@ -313,6 +331,9 @@ describe("SessionApi identity mapping", () => {
 
     const logicalSessionId = sessionApi.getPendingSessionId();
     expect(logicalSessionId).toBeTruthy();
+
+    await sessionApi.getSession(logicalSessionId!);
+    apiMocks.listChats.mockClear();
 
     apiMocks.listChats.mockResolvedValue([
       {

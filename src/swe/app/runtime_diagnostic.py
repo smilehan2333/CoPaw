@@ -26,7 +26,7 @@ _LOG_PREFIX = "RUNTIME_DIAGNOSTIC "
 _SCHEMA = "runtime_diagnostic.v1"
 _STORAGE_PATH = "/opt/deployments/app"
 _BLOCKED_LAG_THRESHOLD_MS = 1000.0
-_SAMPLE_INTERVAL_SECONDS = 1.0
+_SAMPLE_INTERVAL_SECONDS = 10.0
 _FIRST_DIAGNOSTIC_DELAY_SECONDS = 120.0
 _FIRST_DIAGNOSTIC_JITTER_SECONDS = 10.0
 _DIAGNOSTIC_INTERVAL_SECONDS = 1800.0
@@ -215,7 +215,7 @@ class RuntimeDiagnosticManager:
         )
 
     async def run_sampler_loop(self) -> None:
-        """Sample event-loop lag and process CPU once per second."""
+        """Sample event-loop lag and process CPU at a fixed interval."""
         planned_wakeup = self._monotonic_time() + _SAMPLE_INTERVAL_SECONDS
         while True:
             await self._sleep(

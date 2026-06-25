@@ -66,6 +66,7 @@ class CommandHandler(ConversationCommandHandlerMixin):
         memory,
         memory_manager: "BaseMemoryManager | None" = None,
         enable_memory_manager: bool = True,
+        request_context: dict | None = None,
     ):
         """Initialize command handler.
 
@@ -74,11 +75,13 @@ class CommandHandler(ConversationCommandHandlerMixin):
             memory: Agent's in-memory memory instance
             memory_manager: Optional memory manager instance
             enable_memory_manager: Whether memory manager is enabled
+            request_context: Optional request context for session isolation
         """
         self.agent_name = agent_name
         self.memory = memory
         self.memory_manager = memory_manager
         self._enable_memory_manager = enable_memory_manager
+        self._request_context = dict(request_context or {})
 
     def _get_agent_config(self):
         """Get hot-reloaded agent config.
@@ -117,6 +120,11 @@ class CommandHandler(ConversationCommandHandlerMixin):
         """Check if memory manager is available."""
         return self._enable_memory_manager and self.memory_manager is not None
 
+    def _summary_task_scope_id(self) -> str | None:
+        """返回当前会话对应的 summary 任务作用域。"""
+        request_context = getattr(self, "_request_context", {}) or {}
+        return str(request_context.get("session_id") or "").strip() or None
+
     async def _process_compact(
         self,
         messages: list[Msg],
@@ -136,10 +144,17 @@ class CommandHandler(ConversationCommandHandlerMixin):
                 "- Enable memory manager to use this feature",
             )
 
-        self.memory_manager.add_async_summary_task(messages=messages)
+        self.memory_manager.add_async_summary_task(
+            messages=messages,
+            chat_model=self.model,
+            formatter=self.formatter,
+            scope_id=self._summary_task_scope_id(),
+        )
         compact_content = await self.memory_manager.compact_memory(
             messages=messages,
             previous_summary=self.memory.get_compressed_summary(),
+            _bound_chat_model=self.model,
+            _bound_formatter=self.formatter,
         )
 
         if not compact_content:
@@ -178,7 +193,12 @@ class CommandHandler(ConversationCommandHandlerMixin):
                 "- Enable memory manager to use this feature",
             )
 
-        self.memory_manager.add_async_summary_task(messages=messages)
+        self.memory_manager.add_async_summary_task(
+            messages=messages,
+            chat_model=self.model,
+            formatter=self.formatter,
+            scope_id=self._summary_task_scope_id(),
+        )
         self.memory.clear_compressed_summary()
 
         self.memory.clear_content()
@@ -259,14 +279,15 @@ class CommandHandler(ConversationCommandHandlerMixin):
                 "- Enable memory manager to use this feature",
             )
 
-        task_count = len(self.memory_manager.summary_tasks)
+        scope_id = self._summary_task_scope_id()
+        task_count = self.memory_manager.get_summary_task_count(scope_id)
         if task_count == 0:
             return await self._make_system_msg(
                 "**No Summary Tasks**\n\n"
                 "- No pending summary tasks to wait for",
             )
 
-        result = await self.memory_manager.await_summary_tasks()
+        result = await self.memory_manager.await_summary_tasks(scope_id)
         return await self._make_system_msg(
             f"**Summary Tasks Complete**\n\n"
             f"- Waited for {task_count} summary task(s)\n"

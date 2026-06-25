@@ -1,7 +1,7 @@
 import type { IDataContent, IAgentScopeRuntimeMessage } from "../types";
 import { AgentScopeRuntimeMessageType } from "../types";
 
-function getToolMessageKey(data: {
+export function getToolMessageKey(data: {
   call_id?: string;
   id?: string;
   tool_call_id?: string;

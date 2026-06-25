@@ -229,6 +229,7 @@ class SWEAgent(ToolGuardMixin, ReActAgent):
             memory=self.memory,
             memory_manager=self.memory_manager,
             enable_memory_manager=self._enable_memory_manager,
+            request_context=self._request_context,
         )
 
         # Register hooks
@@ -574,8 +575,6 @@ class SWEAgent(ToolGuardMixin, ReActAgent):
         if self._enable_memory_manager and self.memory_manager is not None:
             # update memory manager
             self.memory = self.memory_manager.get_in_memory_memory()
-            self.memory_manager.chat_model = self.model
-            self.memory_manager.formatter = self.formatter
 
             # Register memory_search as a tool function
             self.toolkit.register_tool_function(

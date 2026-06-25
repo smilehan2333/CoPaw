@@ -16,7 +16,7 @@ This document is the single design source of truth for new and modified user-fac
 - Adopt the system incrementally. Do not globally restyle untouched legacy pages as a side effect of another change.
 - UI work may reorganize layout, extract presentational components, consolidate tokens, and move local inline styles into Less/CSS Modules.
 - UI work must not change API contracts, request parameters, route paths, permission checks, iframe messages, Zustand state meaning, event-handler outcomes, validation, error handling, or business operation semantics unless a separate approved requirement says so.
-- The supported visual theme is light. Existing dark-theme code may remain, but new UI work does not need to add dark-theme styling.
+- The actively governed Console design baseline is light. Existing dark-mode code and compatibility styles may remain, but new UI work should not extend dark-theme behavior unless a separate approved requirement calls for it.
 
 ## Reference Direction
 
@@ -57,7 +57,7 @@ Impeccable may be used as a design-review and detector layer for Console UI work
 
 Recommended routine uses:
 
-- Run `node .agents/skills/impeccable/scripts/context.mjs --target console` at the start of an Impeccable-assisted Console review to load `PRODUCT.md` context. Read this file separately because the authoritative Console design document lives at `console/DESIGN.md`.
+- Run `node .agents/skills/impeccable/scripts/context.mjs --target console` at the start of an Impeccable-assisted Console review to load `PRODUCT.md` context. Always read this file separately because the authoritative Console design document lives at `console/DESIGN.md` and may not be loaded by the Impeccable context script.
 - Use `audit`, `critique`, `polish`, `layout`, `typeset`, and `harden` to review new UI, substantial visible changes, reusable visual rules, and pre-ship polishing.
 - Use detector output to look for nested cards, generic gradients, low-contrast text, over-rounded containers, cramped spacing, skipped heading structure, small touch targets, text overflow, unstable responsive layouts, and missing loading, empty, error, disabled, focus, and in-progress states.
 - Record recurring valid findings as updates to this document or central design tokens when they reveal a reusable rule.
@@ -90,7 +90,7 @@ The global Header and navigation use the Management Console theme even when disp
 The current baseline uses platform fonts so it works without downloading font assets or depending on a runtime font CDN.
 
 ```css
---console-font-ui: "Segoe UI", "Microsoft YaHei", "PingFang SC",
+--console-font-ui: "Microsoft YaHei", "PingFang SC",
   "Helvetica Neue", sans-serif;
 
 --console-font-editorial: Georgia, "Songti SC", "SimSun", serif;
@@ -99,7 +99,7 @@ The current baseline uses platform fonts so it works without downloading font as
 ```
 
 - UI role: navigation, breadcrumbs, controls, forms, buttons, tables, cards, metadata, and operational section headings.
-- Editorial role: limited to approved page-level titles, welcome content, featured guidance, or other content-led surfaces. Do not broadly apply serif typography to dense management workflows.
+- Editorial role: limited to approved welcome, featured guidance, or other content-led surfaces. Do not use editorial/serif typography for management page titles, forms, tables, cards, buttons, dense lists, or other operational workflows.
 - Technical role: provider IDs, URLs, paths, code, logs, and machine-oriented values.
 - Preferred UI weights: 400, 500, and 600. Preferred editorial weights: 500 and 600.
 - A later typography-specific change may introduce locally hosted Poppins/Noto Sans SC and Lora/Noto Serif SC assets. Until then, do not add a font CDN or assume those families are present.
@@ -122,7 +122,7 @@ The current baseline uses platform fonts so it works without downloading font as
 | Primary text             | `#111827`     | Titles and main content                            |
 | Secondary text           | `#4B5563`     | Descriptions and labels                            |
 | Muted text               | `#8A94A6`     | Supporting metadata and placeholders               |
-| Management primary       | `#3769FC`     | Primary management actions and focused emphasis    |
+| Management primary       | `#3769FC`     | Default management actions and focused emphasis    |
 | Management primary hover | `#2957DC`     | Hover/active management action state               |
 | Primary soft             | `#EEF4FF`     | Selection and low-emphasis blue feedback           |
 | Conversation primary     | `#3769FC`     | Chat selection, composer, and conversation actions |
@@ -130,7 +130,7 @@ The current baseline uses platform fonts so it works without downloading font as
 | Warning                  | `#A56A24`     | Partial and caution states                         |
 | Error                    | `#B94A4F`     | Destructive and failed states                      |
 
-Blue is shared as a product emphasis across management and conversation surfaces, but each theme retains separate semantic variables and component scopes. Saturated blue is reserved for primary actions, focus, and concise selection; large surfaces use white, with near-white gray-blue reserved for functional grouping.
+Blue is shared as the current product emphasis across management and conversation surfaces, but each theme retains separate semantic variables and component scopes. Conversation primary remains fixed at `#3769FC`; Management primary currently defaults to `#3769FC` and may follow an approved source/brand theme only when token values, this table, and affected surfaces are updated and verified together. Saturated blue is reserved for primary actions, focus, and concise selection; large surfaces use white, with near-white gray-blue reserved for functional grouping.
 
 `console/src/config/consoleDesignTokens.ts` is the normal palette-edit entry point. Change semantic token values there, keep role names stable, update this table, and verify affected surfaces. Do not tune the theme by scattering hexadecimal colors across page styles.
 
@@ -158,8 +158,9 @@ Use a 4px base rhythm. Preferred steps: `4, 8, 12, 16, 20, 24, 32, 40`.
 ### Icons
 
 - Keep AgentScope icons for AgentScope-specific concepts.
-- Prefer `lucide-react` for new generic interface icons.
-- Keep Ant Design icons where already coupled to an Ant Design workflow or where no suitable icon exists.
+- Use `@ant-design/icons` by default for generic interface icons in Ant Design-based management surfaces.
+- Use `lucide-react` only where already established in the changed surface, or when Ant Design does not provide a suitable glyph.
+- Do not mix icon families casually within the same component group.
 - Functional icons must not be emoji.
 - Use consistent 16-18px navigation/control icons and align them to the text baseline.
 
@@ -176,7 +177,7 @@ Use a 4px base rhythm. Preferred steps: `4, 8, 12, 16, 20, 24, 32, 40`.
 
 - The Header and global navigation use white, low-distraction surfaces with restrained text hierarchy, light boundaries, and blue reserved for concise interaction emphasis.
 - The current page owns visual attention. Navigation uses pale blue hover and selection surfaces, moderate text weight, and restrained icon color.
-- All first-level navigation entries, including expandable groups and direct root links, use the same UI font, 13px size, 600 weight, and 36px line box. Second-level entries also use 13px but rely on 400 weight, indentation, quieter color, and selection treatment to preserve hierarchy.
+- All first-level navigation entries, including expandable groups and direct root links, use the same UI font, 14px size, 600 weight, and 36px line box. Second-level entries also use 14px but rely on 400 weight, indentation, quieter color, and selection treatment to preserve hierarchy.
 - Global navigation may appear beside the blue Conversation Workspace without changing either theme's identity.
 - Preserve menu structure, ordering, labels, routes, permissions, expanded groups, and collapse behavior.
 - Preserve the `hideMenu` contract: embedded hosts may remove both Header and global Sidebar.
@@ -207,18 +208,18 @@ Management pages use medium-high information density with white-first host integ
 
 Choose one of three page patterns:
 
-1. **Standard management page**: compact breadcrumb or page heading, optional description, filter/action bar, table or compact card grid.
+1. **Standard management page**: compact breadcrumb when route hierarchy is meaningful, otherwise a compact page heading; optional description, filter/action bar, table or compact card grid.
 2. **List-detail page**: stable left list and flexible right detail panel.
 3. **Dashboard page**: filter bar, concise metrics, charts, and supporting tables.
 
 Shared rules:
 
-- Use one compact page-level breadcrumb with a small contextual icon, followed by clear section headings. Do not duplicate the current page title.
+- Use one compact page-level breadcrumb with a small contextual icon when route hierarchy is meaningful. Otherwise use a compact page heading. Do not show both when they repeat the same current page title.
 - Keep primary actions near the page or section title; group low-frequency actions in a visible more-actions menu.
 - Use the available desktop width with moderate gutters. Bound prose and form fields locally rather than centering the entire page inside a narrow container.
 - Cards should communicate a distinct item, status, or action group. Avoid wrapping every section in a decorative card.
 - Let the white page canvas integrate with the host and connect related sections. Reserve near-white subtle surfaces for functional grouping and white surfaces for actual interactive panels, dialogs, and distinct item cards; do not stack a white page container, white section container, and white child card around the same content.
-- Use the UI font for operational interfaces and reserve the editorial font for content-led moments.
+- Use the UI font for operational interfaces and reserve the editorial font only for approved content-led moments.
 - Empty, loading, error, disabled, unavailable, and in-progress states use consistent spacing, icon scale, title, explanation, and recovery-action placement.
 - Select, dropdown, and menu overlays on Management Console surfaces use white elevated panels, near-white hover states, and `Primary soft` selected states instead of neutral gray selection fills.
 - Data tables and dense lists should keep row rhythm stable under hover, selection, loading, and inline action states. Use truncation, wrapping, tooltips, or detail expansion intentionally; never let a long value push primary operations off screen.
@@ -269,7 +270,7 @@ The `/models` page is the first complete white-first embedded Management Console
 - Each provider card retains icon, name, ID, status, Base URL or equivalent connection summary, model count, and operations.
 - Provider cards use a compact identity header, one continuous aligned summary list, a white surface with a neutral hairline boundary, a standard 12px content-card radius, and a quiet unfilled action row.
 - Model and Settings actions remain directly visible as equal-height, low-emphasis icon-and-text actions. Destructive or low-frequency actions may use an icon-only more-actions menu aligned with them.
-- Primary page actions use `#3769FC`. Secondary and card-level actions remain visually quieter.
+- Primary page actions use the Management primary token. Secondary and card-level actions remain visually quieter.
 - Breadcrumbs, controls, cards, and section titles use the UI font; Provider IDs and URLs use the technical font.
 - Dialogs use consistent header, body spacing, field rhythm, notices, list rows, and footer alignment.
 - Provider and model operations keep their current handlers, validation, confirmation, and result semantics.

@@ -564,12 +564,12 @@ def test_main_app_static_html_returns_text_html_content_type(
     assert "text/html" in response.headers["content-type"].lower()
 
 
-def test_main_app_runtime_static_html_uses_gzip_when_requested(
+def test_main_app_runtime_static_html_skips_gzip_when_requested(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     _set_app_working_dir(monkeypatch, tmp_path)
-    body = "<!doctype html><p>runtime static gzip</p>\n" * 200
+    body = "<!doctype html><p>runtime static html stays plain</p>\n" * 200
     static_file = (
         tmp_path
         / "gzipscope"
@@ -591,7 +591,7 @@ def test_main_app_runtime_static_html_uses_gzip_when_requested(
         )
 
     assert response.status_code == 200
-    assert response.headers["content-encoding"] == "gzip"
+    assert "content-encoding" not in response.headers
     assert response.text == body
 
 

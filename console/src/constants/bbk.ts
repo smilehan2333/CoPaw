@@ -22,5 +22,6 @@ export const BBK_ID_TO_NAME_MAP: Record<string, string> = BBK_ID_MAP.reduce(
  */
 export function getBbkDisplayName(bbkId?: string): string {
   if (!bbkId) return "-";
+  if (bbkId === "other" || bbkId === "unassigned") return "其他";
   return BBK_ID_TO_NAME_MAP[bbkId] || bbkId;
 }

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CLI daemon subcommands: status, restart, reload-config, version, logs.
+"""CLI daemon subcommands: status, restart, reload-config, version.
 
 Shares execution with in-chat /daemon <sub> via daemon_commands.
 """
@@ -13,7 +13,6 @@ import click
 
 from ..app.runner.daemon_commands import (
     DaemonContext,
-    run_daemon_logs,
     run_daemon_reload_config,
     run_daemon_restart,
     run_daemon_status,
@@ -48,7 +47,7 @@ def _context(agent_id: str) -> DaemonContext:
 
 @click.group("daemon")
 def daemon_group() -> None:
-    """Daemon commands: status, restart, reload-config, version, logs."""
+    """Daemon commands: status, restart, reload-config, version."""
 
 
 @daemon_group.command("status")
@@ -101,17 +100,3 @@ def version_cmd(agent_id: str) -> None:
     ctx = _context(agent_id)
     click.echo(f"Agent: {agent_id}\n")
     click.echo(run_daemon_version(ctx))
-
-
-@daemon_group.command("logs")
-@click.option(
-    "-n",
-    "--lines",
-    default=100,
-    type=int,
-    help="Number of last file-log lines to show from swe.log when enabled.",
-)
-def logs_cmd(lines: int) -> None:
-    """显示 swe.log 文件日志；禁用时提示改查 stdout/stderr。"""
-    lines = min(max(1, lines), 2000)
-    click.echo(run_daemon_logs(lines=lines, context=DaemonContext()))

@@ -32,6 +32,7 @@ website/public/search-index.json
 # misc
 .env
 .env.*
+.venv*
 providers.json
 envs.json
 !.env.example
@@ -88,6 +89,22 @@ AGENTS.md
 CLAUDE.md
 .claude
 .codex
+!.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/copaw-f2e-review/
+!.claude/skills/copaw-f2e-review/SKILL.md
+!.codex/
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/copaw-f2e-review/
+.codex/skills/copaw-f2e-review/*
+!.codex/skills/copaw-f2e-review/SKILL.md
+!.codex/skills/copaw-f2e-review/agents/
+.codex/skills/copaw-f2e-review/agents/*
+!.codex/skills/copaw-f2e-review/agents/openai.yaml
 *.tmp
 skills-lock.json
 

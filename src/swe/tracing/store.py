@@ -200,7 +200,9 @@ class TraceStore:
         await self.db.execute(query, params)
 
     async def update_session_name(
-        self, trace_id: str, session_name: str,
+        self,
+        trace_id: str,
+        session_name: str,
     ) -> None:
         """更新 trace 的 session_name。
 
@@ -354,9 +356,10 @@ class TraceStore:
             INSERT INTO swe_tracing_spans (
                 span_id, trace_id, source_id, name, event_type,
                 start_time, end_time, duration_ms, user_id, session_id, channel,
-                model_name, input_tokens, output_tokens, tool_name, skill_name, skill_description, mcp_server,
+                model_name, input_tokens, output_tokens, tool_name, skill_name,
+                skill_id, skill_cn_name, skill_description, mcp_server,
                 tool_input, tool_output, error, user_name, bbk_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         params = (
             span.span_id,
@@ -379,6 +382,8 @@ class TraceStore:
             span.output_tokens,
             span.tool_name,
             span.skill_name,
+            span.skill_id,
+            span.skill_cn_name,
             span.skill_description,
             span.mcp_server,
             json.dumps(span.tool_input) if span.tool_input else None,
@@ -462,9 +467,10 @@ class TraceStore:
             INSERT INTO swe_tracing_spans (
                 span_id, trace_id, source_id, name, event_type,
                 start_time, end_time, duration_ms, user_id, session_id, channel,
-                model_name, input_tokens, output_tokens, tool_name, skill_name, skill_description, mcp_server,
+                model_name, input_tokens, output_tokens, tool_name, skill_name,
+                skill_id, skill_cn_name, skill_description, mcp_server,
                 tool_input, tool_output, error, user_name, bbk_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         params_list = []
         for span in spans:
@@ -490,6 +496,8 @@ class TraceStore:
                     span.output_tokens,
                     span.tool_name,
                     span.skill_name,
+                    span.skill_id,
+                    span.skill_cn_name,
                     span.skill_description,
                     span.mcp_server,
                     json.dumps(span.tool_input) if span.tool_input else None,
@@ -2940,6 +2948,9 @@ class TraceStore:
             output_tokens=row["output_tokens"],
             tool_name=row["tool_name"],
             skill_name=row["skill_name"],
+            skill_id=row.get("skill_id"),
+            skill_cn_name=row.get("skill_cn_name"),
+            skill_description=row.get("skill_description"),
             mcp_server=row.get("mcp_server"),
             tool_input=(
                 json.loads(row["tool_input"]) if row["tool_input"] else None

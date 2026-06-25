@@ -7,6 +7,7 @@ import api from "../../../../api";
 import type {
   CronBroadcastChildItem,
   CronBroadcastChildOperationResult,
+  CronBroadcastChildrenResponse,
   CronJobSpecOutput,
 } from "../../../../api/types";
 
@@ -67,14 +68,31 @@ function renderTenantCell(record: CronBroadcastChildItem) {
   );
 }
 
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN");
+}
+
 export function BroadcastChildrenModal({
   open,
   job,
   onClose,
 }: BroadcastChildrenModalProps) {
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [children, setChildren] = useState<CronBroadcastChildItem[]>([]);
+  const [lookupStatus, setLookupStatus] = useState<
+    CronBroadcastChildrenResponse["status"]
+  >("idle");
+  const [tenantCount, setTenantCount] = useState(0);
+  const [failedTenants, setFailedTenants] = useState(0);
+  const [failureSummary, setFailureSummary] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [operationResults, setOperationResults] = useState<
     CronBroadcastChildOperationResult[]
@@ -89,27 +107,56 @@ export function BroadcastChildrenModal({
     [children],
   );
   const hasFailedResults = operationResults.some((result) => !result.success);
+  const isLookupRunning = lookupStatus === "running";
+
+  const applySnapshot = (response: CronBroadcastChildrenResponse) => {
+    setChildren(response.items || []);
+    setLookupStatus(response.status || "idle");
+    setTenantCount(response.tenant_count || 0);
+    setFailedTenants(response.failed_tenants || 0);
+    setFailureSummary(response.failure_summary || null);
+    setUpdatedAt(response.updated_at || null);
+  };
 
   const loadChildren = async () => {
     if (!job) return;
     setLoading(true);
     try {
       const response = await api.listCronBroadcastChildren(job.id);
-      setChildren(response.items || []);
+      applySnapshot(response);
       setSelectedRowKeys([]);
     } finally {
       setLoading(false);
     }
   };
 
+  const triggerBackgroundRefresh = async () => {
+    if (!job) return;
+    setRefreshing(true);
+    try {
+      const response = await api.refreshCronBroadcastChildren(job.id);
+      applySnapshot(response);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     if (!open) {
       setChildren([]);
+      setLookupStatus("idle");
+      setTenantCount(0);
+      setFailedTenants(0);
+      setFailureSummary(null);
+      setUpdatedAt(null);
       setSelectedRowKeys([]);
       setOperationResults([]);
       return;
     }
-    void loadChildren();
+    void (async () => {
+      await loadChildren();
+      await triggerBackgroundRefresh();
+    })();
   }, [open, job?.id]);
 
   const batchRefs = selectedItems.map((item) => ({
@@ -140,6 +187,28 @@ export function BroadcastChildrenModal({
       setSubmitting(false);
     }
   };
+
+  let dataTimeText = "尚未生成";
+  if (isLookupRunning) {
+    dataTimeText = updatedAt
+      ? `${formatDateTime(updatedAt)}（刷新中）`
+      : "正在生成中";
+  } else if (updatedAt) {
+    dataTimeText = formatDateTime(updatedAt);
+  }
+  let lookupStatusText = "未生成";
+  if (isLookupRunning) {
+    lookupStatusText = "生成中";
+  } else if (lookupStatus === "completed") {
+    lookupStatusText = "已生成";
+  } else if (lookupStatus === "failed") {
+    lookupStatusText = "失败";
+  }
+  const tableEmptyText = isLookupRunning
+    ? "正在生成中"
+    : lookupStatus === "idle"
+      ? "点击刷新生成分发用户列表"
+      : "当前任务尚未分发给任何用户";
 
   const columns: ColumnsType<CronBroadcastChildItem> = [
     {
@@ -219,10 +288,16 @@ export function BroadcastChildrenModal({
           />
         )}
 
-        <Space>
+        <Space wrap>
           <Button onClick={loadChildren} loading={loading}>
             刷新
           </Button>
+          <Text type="secondary">状态：{lookupStatusText}</Text>
+          <Text type="secondary">扫描用户：{tenantCount}</Text>
+          {failedTenants > 0 && (
+            <Text type="warning">读取失败：{failedTenants}</Text>
+          )}
+          <Text type="secondary">数据时间：{dataTimeText}</Text>
           <Button
             danger
             disabled={selectedItems.length === 0}
@@ -249,6 +324,10 @@ export function BroadcastChildrenModal({
           </Button>
         </Space>
 
+        {failureSummary && (
+          <Alert type="warning" showIcon message={failureSummary} />
+        )}
+
         {operationResults.length > 0 && (
           <Alert
             type={hasFailedResults ? "warning" : "success"}
@@ -266,13 +345,13 @@ export function BroadcastChildrenModal({
           rowKey={rowKey}
           columns={columns}
           dataSource={children}
-          loading={loading}
+          loading={loading || refreshing}
           rowSelection={{
             selectedRowKeys,
             onChange: setSelectedRowKeys,
           }}
           pagination={{ pageSize: 8 }}
-          locale={{ emptyText: "当前任务尚未分发给任何用户" }}
+          locale={{ emptyText: tableEmptyText }}
           scroll={{ x: TABLE_SCROLL_X, y: TABLE_SCROLL_Y }}
         />
       </div>

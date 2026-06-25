@@ -236,3 +236,28 @@ def test_public_asset_upload_overwrites_matching_file_name(
     assert response.status_code == 200
     assert response.json()["size"] == len(b"new-content")
     assert target.read_bytes() == b"new-content"
+
+
+def test_public_asset_upload_accepts_template_flag(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """上传时传递 template_flag 表单字段应正常工作。"""
+    _set_working_dir(monkeypatch, tmp_path)
+    client = _build_client()
+    content = b"flagged-content"
+
+    response = client.post(
+        "/assets/upload",
+        files={"file": ("flagged.bin", content, "application/octet-stream")},
+        data={"template_flag": "main-template-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "file_name": "flagged.bin",
+        "asset_path": "asset/flagged.bin",
+        "size": len(content),
+    }
+    assert (tmp_path / "asset" / "flagged.bin").read_bytes() == content

@@ -60,6 +60,7 @@ class TenantWorkspacePool:
         base_working_dir: Path,
         *,
         source_system_config_service: object | None = None,
+        continuous_governance_service: object | None = None,
     ):
         """Initialize the tenant workspace pool.
 
@@ -70,6 +71,7 @@ class TenantWorkspacePool:
         self._base_working_dir = Path(base_working_dir).expanduser().resolve()
         self._base_working_dir.mkdir(parents=True, exist_ok=True)
         self._source_system_config_service = source_system_config_service
+        self._continuous_governance_service = continuous_governance_service
 
         # Tenant workspace registry: tenant_id -> TenantWorkspaceEntry
         self._workspaces: dict[str, TenantWorkspaceEntry] = {}
@@ -97,6 +99,13 @@ class TenantWorkspacePool:
         from .tenant_init_source_store import get_tenant_init_source_store
 
         return get_tenant_init_source_store()
+
+    def set_continuous_governance_service(
+        self,
+        continuous_governance_service: object | None,
+    ) -> None:
+        """更新后续工作区使用的持续治理服务。"""
+        self._continuous_governance_service = continuous_governance_service
 
     def _get_tenant_workspace_dir(self, tenant_id: str) -> Path:
         """Get the workspace directory for a tenant.
@@ -602,7 +611,12 @@ class TenantWorkspacePool:
                     / agent_id,
                 ),
                 tenant_id=tenant_id,
-                source_system_config_service=self._source_system_config_service,
+                source_system_config_service=(
+                    self._source_system_config_service
+                ),
+                continuous_governance_service=(
+                    self._continuous_governance_service
+                ),
             )
 
             if entry is None:

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -174,6 +175,34 @@ async def test_pending_approval_uses_canonical_scope_key_for_legacy_input() -> (
         )
 
     assert pending.scope_id == "dGVuYW50LWE.c291cmNlLWE"
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_gc_keeps_records_inside_timeout_window() -> (
+    None
+):
+    service = ApprovalService()
+    with tenant_context(tenant_id="tenant-a", source_id="source-a"):
+        pending = await service.create_pending(
+            session_id="session-1",
+            user_id="user-1",
+            channel="console",
+            tool_name="execute_shell_command",
+            result=_result(),
+        )
+        pending.created_at = time.time() - 3600
+
+        await service.create_pending(
+            session_id="session-2",
+            user_id="user-1",
+            channel="console",
+            tool_name="execute_shell_command",
+            result=_result(),
+        )
+
+        assert (await service.get_request(pending.request_id)).status == (
+            "pending"
+        )
 
 
 @pytest.mark.asyncio

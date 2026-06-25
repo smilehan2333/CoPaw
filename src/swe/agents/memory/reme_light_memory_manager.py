@@ -27,6 +27,7 @@ from swe.agents.model_factory import create_model_and_formatter
 from swe.agents.tools import read_file, write_file, edit_file
 from swe.agents.utils import get_swe_token_counter
 from swe.app.source_system_config import resolve_tool_result_compact_config
+from swe.tracing import capture_current_trace_context
 from swe.config import load_config
 from swe.config.config import load_agent_config
 from swe.config.context import (
@@ -274,13 +275,16 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
             tenant_id=resolved_tenant_id,
         )
 
-    def _prepare_model_formatter(self) -> None:
-        """Lazily initialize chat_model and formatter if not already set."""
+    def _create_execution_model_formatter(
+        self,
+        trace_context: dict | None = None,
+    ):
+        """为独立执行流程创建专用模型，避免复用共享 chat_model。"""
         self._warn_if_version_mismatch()
-        if self.chat_model is None or self.formatter is None:
-            self.chat_model, self.formatter = create_model_and_formatter(
-                self.agent_id,
-            )
+        return create_model_and_formatter(
+            self.agent_id,
+            trace_context=trace_context,
+        )
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -362,21 +366,33 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         self,
         messages: list[Msg],
         previous_summary: str = "",
-        **_kwargs,
+        **kwargs,
     ) -> str:
         """Compact messages into a condensed summary.
 
         Returns the compacted string, or empty string on failure.
         """
-        self._prepare_model_formatter()
+        bound_chat_model = kwargs.pop("_bound_chat_model", None)
+        bound_formatter = kwargs.pop("_bound_formatter", None)
+        if bound_chat_model is None or bound_formatter is None:
+            execution_trace_context = capture_current_trace_context()
+            execution_model, execution_formatter = (
+                self._create_execution_model_formatter(
+                    trace_context=execution_trace_context,
+                )
+            )
+            if bound_chat_model is None:
+                bound_chat_model = execution_model
+            if bound_formatter is None:
+                bound_formatter = execution_formatter
 
         agent_config = self._load_agent_config()
         cc = agent_config.running.context_compact
 
         result = await self._reme.compact_memory(
             messages=messages,
-            as_llm=self.chat_model,
-            as_llm_formatter=self.formatter,
+            as_llm=bound_chat_model,
+            as_llm_formatter=bound_formatter,
             as_token_counter=get_swe_token_counter(agent_config),
             language=agent_config.language,
             max_input_length=agent_config.running.max_input_length,
@@ -419,9 +435,21 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
 
         return result.get("history_compact", "")
 
-    async def summary_memory(self, messages: list[Msg], **_kwargs) -> str:
+    async def summary_memory(self, messages: list[Msg], **kwargs) -> str:
         """Generate a comprehensive summary of the given messages."""
-        self._prepare_model_formatter()
+        bound_chat_model = kwargs.pop("_bound_chat_model", None)
+        bound_formatter = kwargs.pop("_bound_formatter", None)
+        if bound_chat_model is None or bound_formatter is None:
+            execution_trace_context = capture_current_trace_context()
+            execution_model, execution_formatter = (
+                self._create_execution_model_formatter(
+                    trace_context=execution_trace_context,
+                )
+            )
+            if bound_chat_model is None:
+                bound_chat_model = execution_model
+            if bound_formatter is None:
+                bound_formatter = execution_formatter
 
         agent_config = self._load_agent_config()
         cc = agent_config.running.context_compact
@@ -434,8 +462,8 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
 
         return await self._reme.summary_memory(
             messages=messages,
-            as_llm=self.chat_model,
-            as_llm_formatter=self.formatter,
+            as_llm=bound_chat_model,
+            as_llm_formatter=bound_formatter,
             as_token_counter=get_swe_token_counter(agent_config),
             toolkit=self.summary_toolkit,
             language=agent_config.language,
@@ -507,8 +535,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         )
         start_time = time.time()
 
-        # Prepare model and formatter if not already prepared
-        self._prepare_model_formatter()
+        execution_trace_context = capture_current_trace_context()
+        dream_model, dream_formatter = self._create_execution_model_formatter(
+            trace_context=execution_trace_context,
+        )
 
         # Load agent config with tenant_id for proper scoping
         agent_config = load_agent_config(self.agent_id, tenant_id=tenant_id)
@@ -565,7 +595,7 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         # Create a minimal ReActAgent for dream functionality
         dream_agent = ReActAgent(
             name="DreamOptimizer",
-            model=self.chat_model,
+            model=dream_model,
             sys_prompt=(
                 "You are a Dream Optimization Assistant. Your task is to organize "
                 "and optimize memory files, NOT to redefine the Agent's identity.\n\n"
@@ -579,7 +609,7 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
                 "Your goal is memory optimization, not identity replacement."
             ),
             toolkit=self.summary_toolkit,
-            formatter=self.formatter,
+            formatter=dream_formatter,
         )
 
         # Build request message
@@ -590,7 +620,7 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         )
 
         # Get model name for logging
-        model_used = getattr(self.chat_model, "model_name", "unknown")
+        model_used = getattr(dream_model, "model_name", "unknown")
 
         # Track token usage before
         input_tokens_before = getattr(dream_agent, "_total_input_tokens", 0)

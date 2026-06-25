@@ -9,7 +9,7 @@ export const COOKIE_KEYS = {
 } as const;
 // ── LocalStorage Keys ─────────────────────────────────────────────────────
 export const STORAGE_KEYS = {
-  authToken: "copaw_auth_token"
+  authToken: "copaw_auth_token",
 } as const;
 
 // ── URLs ──────────────────────────────────────────────────────────────────
@@ -62,6 +62,7 @@ export const KEY_TO_PATH: Record<string, string> = {
   "analytics-business-overview": "/analytics/business-overview",
   "analytics-claw-data-overview": "/analytics/claw-data-overview",
   "analytics-cron-job-overview": "/analytics/cron-job-overview",
+  "analytics-continuous-governance": "/analytics/continuous-governance",
   "monitor-cron-overview": "/monitor/cron-overview",
   "instance-overview": "/instance/overview",
   "instance-instances": "/instance/instances",
@@ -99,6 +100,7 @@ export const KEY_TO_LABEL: Record<string, string> = {
   "analytics-business-overview": "nav.analyticsBusinessOverview",
   "analytics-claw-data-overview": "nav.analyticsClawDataOverview",
   "analytics-cron-job-overview": "nav.analyticsCronJobOverview", //定时任务概览
+  "analytics-continuous-governance": "nav.analyticsContinuousGovernance",
   "instance-overview": "nav.instanceOverview",
   "instance-instances": "nav.instanceInstances",
   "instance-allocations": "nav.instanceAllocations",

@@ -1,4 +1,5 @@
 import { request } from "../request";
+import { useProviderModelStore } from "../../stores/providerModelStore";
 import type {
   ProviderInfo,
   ProviderConfigRequest,
@@ -38,65 +39,112 @@ function buildActiveModelQuery(params?: GetActiveModelsRequest): string {
 export const providerApi = {
   listProviders: () => request<ProviderInfo[]>("/models"),
 
-  configureProvider: (providerId: string, body: ProviderConfigRequest) =>
-    request<ProviderInfo>(`/models/${encodeURIComponent(providerId)}/config`, {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
+  configureProvider: async (
+    providerId: string,
+    body: ProviderConfigRequest,
+  ) => {
+    const result = await request<ProviderInfo>(
+      `/models/${encodeURIComponent(providerId)}/config`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      },
+    );
+    useProviderModelStore
+      .getState()
+      .invalidate({ providers: true, active: false });
+    return result;
+  },
 
   getActiveModels: (params?: GetActiveModelsRequest) =>
     request<ActiveModelsInfo>(buildActiveModelQuery(params)),
 
-  setActiveLlm: (body: ModelSlotRequest) =>
-    request<ActiveModelsInfo>("/models/active", {
+  setActiveLlm: async (body: ModelSlotRequest) => {
+    const result = await request<ActiveModelsInfo>("/models/active", {
       method: "PUT",
       body: JSON.stringify(body),
-    }),
+    });
+    useProviderModelStore.getState().setActiveModels(result);
+    return result;
+  },
 
   listActiveModelDistributionTenants: () =>
     request<DistributionTenantListResponse>("/models/distribution/tenants"),
 
-  distributeActiveLlm: (body: ActiveModelDistributionRequest) =>
-    request<ActiveModelDistributionResponse>("/models/distribution/active-llm", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  distributeActiveLlm: async (body: ActiveModelDistributionRequest) => {
+    const result = await request<ActiveModelDistributionResponse>(
+      "/models/distribution/active-llm",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    useProviderModelStore
+      .getState()
+      .invalidate({ providers: false, active: true });
+    return result;
+  },
 
-  distributeProviders: (body: ProvidersDistributionRequest) =>
-    request<ProvidersDistributionResponse>("/models/distribution/providers", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  distributeProviders: async (body: ProvidersDistributionRequest) => {
+    const result = await request<ProvidersDistributionResponse>(
+      "/models/distribution/providers",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    useProviderModelStore.getState().invalidate();
+    return result;
+  },
 
   /* ---- Custom provider CRUD ---- */
 
-  createCustomProvider: (body: CreateCustomProviderRequest) =>
-    request<ProviderInfo>("/models/custom-providers", {
+  createCustomProvider: async (body: CreateCustomProviderRequest) => {
+    const result = await request<ProviderInfo>("/models/custom-providers", {
       method: "POST",
       body: JSON.stringify(body),
-    }),
+    });
+    useProviderModelStore
+      .getState()
+      .invalidate({ providers: true, active: false });
+    return result;
+  },
 
-  deleteCustomProvider: (providerId: string) =>
-    request<ProviderInfo[]>(
+  deleteCustomProvider: async (providerId: string) => {
+    const result = await request<ProviderInfo[]>(
       `/models/custom-providers/${encodeURIComponent(providerId)}`,
       { method: "DELETE" },
-    ),
+    );
+    useProviderModelStore.getState().invalidate();
+    return result;
+  },
 
   /* ---- Model CRUD (works for both built-in and custom providers) ---- */
 
-  addModel: (providerId: string, body: AddModelRequest) =>
-    request<ProviderInfo>(`/models/${encodeURIComponent(providerId)}/models`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  addModel: async (providerId: string, body: AddModelRequest) => {
+    const result = await request<ProviderInfo>(
+      `/models/${encodeURIComponent(providerId)}/models`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    useProviderModelStore
+      .getState()
+      .invalidate({ providers: true, active: false });
+    return result;
+  },
 
-  removeModel: (providerId: string, modelId: string) =>
-    request<ProviderInfo>(
+  removeModel: async (providerId: string, modelId: string) => {
+    const result = await request<ProviderInfo>(
       `/models/${encodeURIComponent(providerId)}/models/${encodeURIComponent(
         modelId,
       )}`,
       { method: "DELETE" },
-    ),
+    );
+    useProviderModelStore.getState().invalidate();
+    return result;
+  },
 
   /* ---- Test Connection ---- */
 

@@ -35,6 +35,7 @@ export interface ExpandablePanelProps {
   onTaskRun?: (task: CronJobSpecOutput) => void;
   onTaskResume?: (task: CronJobSpecOutput) => void;
   onTaskDelete?: (task: CronJobSpecOutput) => void;
+  onTaskEdit?: (task: CronJobSpecOutput) => void;
   toolbarRef: React.RefObject<HTMLElement | null>;
   hasMoreSessions?: boolean;
   sessionTotal?: number;
@@ -55,6 +56,7 @@ export default function ExpandablePanel({
   onTaskRun,
   onTaskResume,
   onTaskDelete,
+  onTaskEdit,
   toolbarRef,
   hasMoreSessions = false,
   sessionTotal,
@@ -113,6 +115,7 @@ export default function ExpandablePanel({
             onTaskRun={onTaskRun}
             onTaskResume={onTaskResume}
             onTaskDelete={onTaskDelete}
+            onTaskEdit={onTaskEdit}
           />
         ) : (
           <HistoryContent
@@ -138,6 +141,7 @@ function TasksContent({
   onTaskRun,
   onTaskResume,
   onTaskDelete,
+  onTaskEdit,
 }: {
   tasks: CronJobSpecOutput[];
   selectedTaskId?: string;
@@ -146,6 +150,7 @@ function TasksContent({
   onTaskRun?: (task: CronJobSpecOutput) => void;
   onTaskResume?: (task: CronJobSpecOutput) => void;
   onTaskDelete?: (task: CronJobSpecOutput) => void;
+  onTaskEdit?: (task: CronJobSpecOutput) => void;
 }) {
   const [pausedCollapsed, setPausedCollapsed] = useState(true);
   const pausedRegionId = useId();
@@ -198,7 +203,8 @@ function TasksContent({
             sidebarMeta.canPause ||
             sidebarMeta.canRun ||
             sidebarMeta.canResume ||
-            sidebarMeta.canDelete) && (
+            sidebarMeta.canDelete ||
+            (onTaskEdit && sidebarMeta.canEdit)) && (
             <div className="expandable-panel-task-trailing">
               {sidebarMeta.unreadCount > 0 && (
                 <span className="expandable-panel-task-badge">
@@ -210,7 +216,8 @@ function TasksContent({
               {(sidebarMeta.canPause ||
                 sidebarMeta.canRun ||
                 sidebarMeta.canResume ||
-                sidebarMeta.canDelete) && (
+                sidebarMeta.canDelete ||
+                (onTaskEdit && sidebarMeta.canEdit)) && (
                 <div className="expandable-panel-task-actions">
                   <TaskActionMenu
                     task={task}
@@ -220,6 +227,7 @@ function TasksContent({
                     onTaskRun={onTaskRun}
                     onTaskResume={onTaskResume}
                     onTaskDelete={onTaskDelete}
+                    onTaskEdit={onTaskEdit}
                   />
                 </div>
               )}

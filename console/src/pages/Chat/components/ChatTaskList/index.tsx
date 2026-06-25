@@ -44,6 +44,7 @@ export interface ChatTaskListProps {
   onTaskRun?: (task: CronJobSpecOutput) => void;
   onTaskResume?: (task: CronJobSpecOutput) => void;
   onTaskDelete?: (task: CronJobSpecOutput) => void;
+  onTaskEdit?: (task: CronJobSpecOutput) => void;
 }
 
 export default function ChatTaskList(props: ChatTaskListProps) {
@@ -55,6 +56,7 @@ export default function ChatTaskList(props: ChatTaskListProps) {
     onTaskRun,
     onTaskResume,
     onTaskDelete,
+    onTaskEdit,
   } = props;
   const [collapsed, setCollapsed] = useState(false);
   const [pausedCollapsed, setPausedCollapsed] = useState(true);
@@ -119,7 +121,8 @@ export default function ChatTaskList(props: ChatTaskListProps) {
           {(sidebarMeta.canPause ||
             sidebarMeta.canRun ||
             sidebarMeta.canResume ||
-            sidebarMeta.canDelete) && (
+            sidebarMeta.canDelete ||
+            (onTaskEdit && sidebarMeta.canEdit)) && (
             <div className="chat-task-list-item-trailing">
               <div className="chat-task-list-item-actions">
                 <TaskActionMenu
@@ -130,6 +133,7 @@ export default function ChatTaskList(props: ChatTaskListProps) {
                   onTaskRun={onTaskRun}
                   onTaskResume={onTaskResume}
                   onTaskDelete={onTaskDelete}
+                  onTaskEdit={onTaskEdit}
                 />
               </div>
             </div>
@@ -194,6 +198,7 @@ export default function ChatTaskList(props: ChatTaskListProps) {
               </div>
             ) : (
               <>
+                {runnableTasks.map(renderTask)}
                 {pausedTasks.length > 0 && (
                   <div className="chat-task-list-paused-group">
                     <button
@@ -224,7 +229,6 @@ export default function ChatTaskList(props: ChatTaskListProps) {
                     </div>
                   </div>
                 )}
-                {runnableTasks.map(renderTask)}
               </>
             )}
           </div>

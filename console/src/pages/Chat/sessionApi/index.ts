@@ -154,6 +154,7 @@ interface ExtendedSession extends IAgentScopeRuntimeWebUISession {
   createdAt?: string | null;
   /** Whether the backend is still generating a response for this session. */
   generating?: boolean;
+  skipInitialResolve?: boolean;
 }
 
 interface SessionTitlePatchPayload {
@@ -1714,6 +1715,11 @@ export class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
         return this.getResolvedLocalTimestampSession(sessionId, fromList);
       }
 
+      if (fromList?.skipInitialResolve) {
+        fromList.skipInitialResolve = false;
+        return this.getLocalSession(sessionId);
+      }
+
       // The stream may already have created a backend chat while this tab still
       // only knows the local timestamp id. Refresh once so switching back to a
       // running local session can resolve its backend status before reconnecting.
@@ -1861,6 +1867,7 @@ export class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
       name: session.name || DEFAULT_SESSION_NAME,
       messages: [],
       meta: {},
+      skipInitialResolve: true,
     } as ExtendedSession;
     // ==================== userId 统一整改结束 ====================
 

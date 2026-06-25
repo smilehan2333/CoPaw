@@ -1,0 +1,3 @@
+# Tool Output Frames Are Live Presentation
+
+Tool Output Frames are live presentation events for showing real textual tool output while a tool is still running; they are not final tool results, model-visible context, or durable chat history. We use a dedicated stream event and a Live Tool Output Guard so running tools can update the frontend without bypassing final tool-result truncation, history rebuilding, or Tool Call Status rules. When a terminal tool result arrives, it becomes the authoritative tool-card output; active-run reconnect may replay buffered live frames, but completed-run history only rebuilds from final tool records.

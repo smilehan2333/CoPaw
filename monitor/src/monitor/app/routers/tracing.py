@@ -1346,6 +1346,7 @@ async def batch_update_tracing_user_info(
 
     按 user_id 去重查询，对每个唯一 user_id 只调用一次 API，
     然后批量更新该 user_id 对应的所有 traces 和 spans（不限定 source_id）。
+    只要 user_name 或 bbk_id 任一缺失，就纳入回填范围。
 
     Args:
         request: FastAPI 请求对象
@@ -1376,7 +1377,10 @@ async def batch_update_tracing_user_info(
         FROM swe_tracing_traces
         WHERE user_id IS NOT NULL
           AND user_id != ''
-          AND (user_name IS NULL OR user_name = '')
+          AND (
+                user_name IS NULL OR user_name = ''
+                OR bbk_id IS NULL OR bbk_id = ''
+          )
         LIMIT %s
     """
     unique_users = await db.fetch_all(query, (batch_size,))
@@ -1396,7 +1400,10 @@ async def batch_update_tracing_user_info(
         SELECT COUNT(*) as cnt
         FROM swe_tracing_traces
         WHERE user_id IN ({placeholders})
-          AND (user_name IS NULL OR user_name = '')
+          AND (
+                user_name IS NULL OR user_name = ''
+                OR bbk_id IS NULL OR bbk_id = ''
+          )
     """
     count_result = await db.fetch_one(count_query, tuple(unique_user_ids))
     total = count_result["cnt"] if count_result else 0
@@ -1439,7 +1446,10 @@ async def batch_update_tracing_user_info(
             UPDATE swe_tracing_traces
             SET user_name = %s, bbk_id = %s
             WHERE user_id = %s
-              AND (user_name IS NULL OR user_name = '')
+              AND (
+                    user_name IS NULL OR user_name = ''
+                    OR bbk_id IS NULL OR bbk_id = ''
+              )
         """
         traces_updated = await db.execute_many(traces_query, updates_by_user)
 
@@ -1448,7 +1458,10 @@ async def batch_update_tracing_user_info(
             UPDATE swe_tracing_spans
             SET user_name = %s, bbk_id = %s
             WHERE user_id = %s
-              AND (user_name IS NULL OR user_name = '')
+              AND (
+                    user_name IS NULL OR user_name = ''
+                    OR bbk_id IS NULL OR bbk_id = ''
+              )
         """
         spans_updated = await db.execute_many(spans_query, updates_by_user)
 

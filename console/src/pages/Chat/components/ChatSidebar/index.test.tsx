@@ -1,7 +1,9 @@
 import React from "react";
 import { fireEvent, render, waitFor } from "@testing-library/react";
+import { Modal } from "antd";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChatSidebar from ".";
+import sessionApi from "../../sessionApi";
 
 interface TestSession {
   id: string;
@@ -53,7 +55,26 @@ vi.mock("./CollapsedToolbar", () => ({ default: () => null }));
 vi.mock("./ExpandablePanel", () => ({ default: () => null }));
 vi.mock("./HistorySkeleton", () => ({ HistorySkeleton: () => null }));
 vi.mock("./HistorySessionRow", () => ({
-  HistorySessionRow: ({ name }: { name: string }) => <div>{name}</div>,
+  HistorySessionRow: ({
+    name,
+    session,
+    onSessionDelete,
+  }: {
+    name: string;
+    session: { id: string; realId?: string };
+    onSessionDelete: (
+      sessionId: string,
+      backendId: string | null,
+      sessionName: string,
+    ) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() => onSessionDelete(session.id, session.realId || null, name)}
+    >
+      {name}
+    </button>
+  ),
 }));
 
 vi.mock("use-context-selector", () => ({
@@ -103,6 +124,9 @@ describe("ChatSidebar infinite history scrolling", () => {
     mocks.hasMoreSessions.mockReset();
     mocks.getSessionTotal.mockReset();
     mocks.getSessions.mockReset();
+    vi.mocked(Modal.confirm).mockReset();
+    vi.mocked(sessionApi.getSessionList).mockReset();
+    vi.mocked(sessionApi.removeSession).mockReset();
     mocks.context.setSessions = mocks.setSessions;
     mocks.context.setSessionLoading = mocks.setSessionLoading;
     mocks.context.getSessions = mocks.getSessions;
@@ -145,6 +169,39 @@ describe("ChatSidebar infinite history scrolling", () => {
     const { getAllByText } = render(<ChatSidebar tasks={[]} />);
 
     expect(getAllByText("历史记录(120)").length).toBeGreaterThan(0);
+  });
+
+  it("excludes the deleted session when refreshing after delete", async () => {
+    const nextSessions = [
+      {
+        id: "chat-2",
+        name: "second chat",
+        messages: [],
+        createdAt: "2026-06-09T00:00:00Z",
+      },
+    ];
+    vi.mocked(sessionApi.removeSession).mockResolvedValue(nextSessions);
+    vi.mocked(sessionApi.getSessionList).mockResolvedValue(nextSessions);
+    mocks.getSessions.mockReturnValue([
+      ...mocks.context.sessions,
+      ...nextSessions,
+    ]);
+    mocks.hasMoreSessions.mockReturnValue(false);
+
+    const { getAllByText } = render(<ChatSidebar tasks={[]} />);
+    mocks.setSessions.mockClear();
+
+    fireEvent.click(getAllByText("first chat")[0]);
+    await vi.mocked(Modal.confirm).mock.calls[0]?.[0]?.onOk?.();
+
+    await waitFor(() => {
+      expect(mocks.setSessions).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "chat-2" }),
+      ]);
+    });
+    expect(mocks.setSessions).not.toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: "chat-1" })]),
+    );
   });
 
   it("preserves a concurrently created session and generating state when a page resolves", async () => {

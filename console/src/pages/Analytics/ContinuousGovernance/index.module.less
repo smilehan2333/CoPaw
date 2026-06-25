@@ -1,0 +1,401 @@
+.page {
+  min-height: 100%;
+  padding: 20px 24px 28px;
+  background: #f5f7fb;
+}
+
+.tabs {
+  :global(.ant-tabs-nav) {
+    margin-bottom: 16px;
+  }
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  h3 {
+    margin: 0;
+    color: #111827;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  p {
+    margin: 6px 0 0;
+    color: #64748b;
+    font-size: 14px;
+  }
+}
+
+.healthPanel {
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+}
+
+.healthList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.healthRow {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) minmax(220px, 2fr) 140px;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: #7c2d12;
+  font-size: 13px;
+}
+
+.healthEntity,
+.healthReason,
+.healthTime {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.healthTime {
+  color: #9a3412;
+  text-align: right;
+}
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+}
+
+.filterControl {
+  width: 150px;
+}
+
+.dateShortcuts {
+  flex-shrink: 0;
+}
+
+.searchInput {
+  width: 220px;
+}
+
+.filterActions {
+  margin-left: auto;
+}
+
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.kpiCard {
+  min-height: 104px;
+  padding: 14px 14px 12px;
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-top: 3px solid #2563eb;
+  border-radius: 8px;
+}
+
+.kpiHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.kpiIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.kpiLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpiValue {
+  margin-top: 16px;
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.chartGrid {
+  display: grid;
+  grid-template-columns:
+    minmax(280px, 1.4fr)
+    minmax(280px, 1.4fr)
+    minmax(220px, 1fr)
+    minmax(220px, 1fr);
+  align-items: start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.panel,
+.tablePanel {
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+}
+
+.panel {
+  height: 260px;
+  overflow: hidden;
+  padding: 16px;
+}
+
+.tablePanel {
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.panelMeta {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.trendWrap {
+  display: flex;
+  flex-direction: column;
+  height: 206px;
+}
+
+.trendSvg,
+.savingsLineSvg {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chartGridLine {
+  stroke: #edf2f7;
+  stroke-width: 1;
+}
+
+.chartAxisLine {
+  stroke: #cbd5e1;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.chartYAxisLabel,
+.chartXAxisLabel {
+  fill: #64748b;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.chartYAxisLabel {
+  text-anchor: end;
+}
+
+.chartXAxisLabel {
+  text-anchor: middle;
+}
+
+.trendBarManual {
+  fill: #16a34a;
+}
+
+.trendBarAuto {
+  fill: #2f80ed;
+}
+
+.trendLegend {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  padding-top: 8px;
+  color: #475569;
+  font-size: 12px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
+}
+
+.trendLegendManual {
+  background: #16a34a;
+}
+
+.trendLegendAuto {
+  background: #2f80ed;
+}
+
+.savingsChart {
+  display: flex;
+  flex-direction: column;
+  height: 206px;
+  padding-bottom: 8px;
+}
+
+.savingsLine {
+  fill: none;
+  stroke: #0f766e;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.savingsPoint {
+  fill: #0f766e;
+  stroke: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.distributionList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.distributionListScrollable {
+  max-height: 196px;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.distributionRow {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 10px;
+}
+
+.distributionName,
+.distributionValue {
+  color: #334155;
+  font-size: 13px;
+}
+
+.distributionName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distributionValue {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.distributionTrack {
+  height: 8px;
+  background: #edf2f7;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.distributionBar,
+.bbkBar {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.distributionBar {
+  background: #2563eb;
+}
+
+.bbkBar {
+  background: #16a34a;
+}
+
+.errorText {
+  color: #dc2626;
+}
+
+.pathText {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+@media (max-width: 1280px) {
+  .kpiGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .chartGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding: 14px;
+  }
+
+  .kpiGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .filterControl,
+  .dateShortcuts,
+  .searchInput {
+    width: 100%;
+  }
+
+  .chartGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .healthRow {
+    grid-template-columns: 1fr;
+  }
+
+  .healthTime {
+    text-align: left;
+  }
+}

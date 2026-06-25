@@ -50,7 +50,8 @@ export interface TaskStatusBreakdown {
 
 export interface TaskStatusSummary {
   total_tasks: number;
-  success: number;
+  success: number; // status='success' AND async_status='success'
+  running: number; // status='success' AND async_status IS NULL
   failed: number;
   cancelled: number;
   read_count: number;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoPaw F2E Review"
+  short_description: "CoPaw-adapted frontend review checklist"
+  default_prompt: "Use this when writing or reviewing CoPaw Console frontend code."

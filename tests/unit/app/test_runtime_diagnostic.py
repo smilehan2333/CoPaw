@@ -345,6 +345,36 @@ async def test_sample_once_latches_pod_disk_io_collection_failure(
 
 
 @pytest.mark.asyncio
+async def test_sampler_loop_uses_ten_second_interval() -> None:
+    sleeps: list[float] = []
+    planned_wakeups: list[float] = []
+    now = 100.0
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+        if len(sleeps) == 3:
+            raise asyncio.CancelledError
+
+    manager = _manager(
+        monotonic_time=lambda: now,
+        sleep=fake_sleep,
+    )
+
+    async def fake_sample_once(*, planned_wakeup: float) -> None:
+        planned_wakeups.append(planned_wakeup)
+
+    manager.sample_once = fake_sample_once  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await manager.run_sampler_loop()
+
+    assert sleeps == [10.0, 10.0, 10.0]
+    assert planned_wakeups == [110.0, 120.0]
+
+
+@pytest.mark.asyncio
 async def test_periodic_loop_uses_initial_jitter_then_regular_interval() -> (
     None
 ):

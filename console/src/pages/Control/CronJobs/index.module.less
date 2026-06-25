@@ -107,6 +107,40 @@
   cursor: help;
 }
 
+.jobNameCell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.jobNameText {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.broadcastChildTag {
+  margin-inline-end: 0;
+  cursor: help;
+}
+
+.broadcastChildPopover {
+  display: grid;
+  gap: 8px;
+  max-width: 320px;
+  font-size: 12px;
+}
+
+.broadcastChildPopoverLabel {
+  display: inline-block;
+  min-width: 56px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .codeText {
   font-size: 12px;
 }
@@ -237,6 +271,10 @@
 
   .formHelperLink {
     color: #69b1ff !important;
+  }
+
+  .broadcastChildPopoverLabel {
+    color: rgba(255, 255, 255, 0.45);
   }
 
   .broadcastOffsetControls {

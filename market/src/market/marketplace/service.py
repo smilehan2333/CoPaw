@@ -18,7 +18,11 @@ import httpx
 from ..config.constant import SWE_INTERNAL_URL, SWE_INTERNAL_TOKEN
 from ..database.connection import DatabaseConnection
 from ..security import SkillScanError, scan_skill_directory
-from ..utils.skill_md import extract_version as _extract_version_md
+from ..utils.skill_md import (
+    extract_version as _extract_version_md,
+    parse_frontmatter,
+)
+from ..utils.skill_utils import clean_skill_name
 from ..utils.version import bump_patch as _shared_bump_patch
 from .fs import (
     _atomic_write_json,
@@ -39,6 +43,7 @@ from .fs import (
     save_mcp_config,
     normalize_skill_name,
 )
+from .skill_registry import SkillRegistry
 from .models import MarketItem
 from .schemas import (
     DistributeRequest,
@@ -234,13 +239,6 @@ def _bump_patch(version: str) -> str:
     return _shared_bump_patch(version)
 
 
-def _normalize_version_text(value: Any) -> str:
-    """将任意版本字段归一化为空或非空字符串."""
-    if value in (None, ""):
-        return ""
-    return str(value).strip()
-
-
 def _decode_creator_name(value: str) -> str:
     """解码通过请求头传入的创建人名称，并兼容历史已编码数据。"""
     if not value:
@@ -360,7 +358,8 @@ def _parse_md_frontmatter(
             key = key.strip().lower()
             val = val.strip()
             if key == "name" and val:
-                name = val
+                # 去除引号（复用公共工具函数）
+                name = clean_skill_name(val)
             elif key == "description" and val:
                 description = val
     return name, description
@@ -378,14 +377,20 @@ def _upsert_skill_item(
 ) -> MarketItem:
     """更新已有技能条目或创建新条目，返回更新/创建后的 item。"""
     now = datetime.now(timezone.utc).isoformat()
+    # 使用 cn_name（前端传递的字段名）
+    cn_name = req.cn_name or req.chinese_name
     if existing is not None:
         version = _bump_patch(existing.version)
         existing.version = version
+        existing.chinese_name = cn_name
         existing.description = req.description
         existing.creator_id = req.creator_id
         existing.creator_name = req.creator_name
         existing.category_id = req.category_id
         existing.bbk_ids = req.bbk_ids
+        # 直接使用请求中的 skill_id
+        if req.skill_id:
+            existing.skill_id = req.skill_id
         # 重新发布已下架技能时，更新 created_at 为当前时间
         if existing.status == "inactive":
             existing.created_at = now
@@ -397,6 +402,8 @@ def _upsert_skill_item(
         item_id=str(uuid.uuid4()),
         item_type="skill",
         name=req.name,
+        skill_id=req.skill_id,
+        chinese_name=cn_name,
         description=req.description,
         version="1.0.0",
         creator_id=req.creator_id,
@@ -433,6 +440,13 @@ def _copy_skill_files(
             if skill_dir.exists():
                 shutil.rmtree(skill_dir)
             shutil.copytree(src_skill_dir, skill_dir)
+            # 删除复制过来的 skill.json（不再需要）
+            skill_json_path = skill_dir / "skill.json"
+            if skill_json_path.exists():
+                try:
+                    skill_json_path.unlink()
+                except OSError:
+                    pass
             logger.info(
                 "Copied entire skill directory from %s to %s",
                 src_skill_dir,
@@ -467,8 +481,8 @@ def _build_skill_metadata_for_manifest(
 ) -> dict[str, Any]:
     """从技能目录构建 manifest 所需的 metadata 字段.
 
-    只从 SKILL.md 读取基本信息，额外字段（creator_id, creator_name, bbk_id 等）
-    由调用方通过 extra_metadata 参数传入。
+    只从 SKILL.md 读取基本信息（name、description、version），
+    skill_id 和 cn_name 由调用方通过 extra_metadata 参数传入。
     """
     skill_md_path = skill_dir / "SKILL.md"
     name = skill_name
@@ -509,6 +523,7 @@ class MarketplaceService:
         self.db = db
         self.marketplace_root = marketplace_root
         self.swe_root = swe_root
+        self.skill_registry = SkillRegistry(db)
 
     async def _trigger_agent_reload(
         self,
@@ -649,13 +664,21 @@ class MarketplaceService:
             skills_dict[skill_name] = entry
             return True
 
-        return mutate_user_skill_manifest(
+        result = mutate_user_skill_manifest(
             self.swe_root,
             user_id,
             agent_id,
             _update,
             source_id,
         )
+        # 打印日志，记录实际更新的目录路径（user_id 是 base64 编码，需要知道实际目录）
+        logger.info(
+            "Register skill in manifest: skills_dir=%s, skill_name=%s, source=%s",
+            skills_dir,
+            skill_name,
+            source,
+        )
+        return result
 
     async def enable_skill(
         self,
@@ -723,6 +746,13 @@ class MarketplaceService:
 
         if updated:
             await self._trigger_agent_reload(user_id, agent_id, source_id)
+            # 更新数据库 swe_skills 表
+            await self.skill_registry.update_skill(
+                user_id=user_id,
+                skill_name=skill_name,
+                source_id=source_id or "",
+                enabled=True,
+            )
 
         return {"success": updated}
 
@@ -753,6 +783,13 @@ class MarketplaceService:
 
         if updated:
             await self._trigger_agent_reload(user_id, agent_id, source_id)
+            # 更新数据库 swe_skills 表
+            await self.skill_registry.update_skill(
+                user_id=user_id,
+                skill_name=skill_name,
+                source_id=source_id or "",
+                enabled=False,
+            )
 
         return {"success": updated}
 
@@ -804,6 +841,13 @@ class MarketplaceService:
                 agent_id,
                 _remove,
                 source_id,
+            )
+
+            # 删除数据库记录
+            await self.skill_registry.delete_skill(
+                user_id,
+                skill_name,
+                source_id or "",
             )
 
         return results
@@ -896,20 +940,18 @@ class MarketplaceService:
         # 创建版本快照
         # source_user_*：内容来源是 req.creator_*（PublishSkillRequest 显式指定）
         # created_by_*：操作者（admin），未传则与 source_user 相同（向后兼容）
-        # source_user_version 优先使用请求中传入的值；未传时按用户元数据、
-        # skill.json、SKILL.md 只读回退，且不制造默认版本号。
-        manifest_metadata = self._get_source_skill_manifest_metadata(
-            source_id,
-            req,
-        )
-        source_user_version = (
-            req.source_user_version
-            or self._resolve_user_skill_version(
-                skill_dir=skill_dir,
-                manifest_metadata=manifest_metadata,
-                skill_json=req.skill_json,
-            )
-        )
+        # source_user_version 优先使用请求中传入的值（前端从 manifest 获取），
+        # 其次从 SKILL.md frontmatter 提取（兼容旧调用方或不传的场景）。
+        source_user_version = req.source_user_version
+        if not source_user_version:
+            skill_md_path = skill_dir / "SKILL.md"
+            if skill_md_path.exists():
+                try:
+                    source_user_version = _extract_version_md(
+                        skill_md_path.read_text(encoding="utf-8"),
+                    )
+                except OSError:
+                    pass
 
         version_svc = SkillVersionService(self.marketplace_root)
         version_unchanged = False
@@ -1108,6 +1150,8 @@ class MarketplaceService:
                 MarketSkillResponse(
                     item_id=item.item_id,
                     name=item.name,
+                    skill_id=item.skill_id,
+                    chinese_name=item.chinese_name,
                     description=item.description,
                     version=item.version,
                     creator_id=item.creator_id,
@@ -1140,6 +1184,8 @@ class MarketplaceService:
         return MarketSkillDetail(
             item_id=item.item_id,
             name=item.name,
+            skill_id=item.skill_id,
+            chinese_name=item.chinese_name,
             description=item.description,
             version=item.version,
             creator_id=item.creator_id,
@@ -1201,6 +1247,10 @@ class MarketplaceService:
         # 将技能名称规范化为目录名（保留中文等 Unicode 字符）
         safe_skill_name = normalize_skill_name(item.name)
 
+        # 直接使用 MarketItem 中已保存的 skill_id 和 chinese_name
+        skill_id = item.skill_id
+        cn_name = item.chinese_name
+
         target_users = await self._resolve_target_users(source_id, req)
         count = 0
         conflicts: list[dict] = []
@@ -1218,6 +1268,8 @@ class MarketplaceService:
                     description=item.description,
                     distributed_by=operator_id,
                     version=item.version,
+                    skill_id=skill_id,
+                    cn_name=cn_name,
                 )
 
                 if result.get("status") == "conflict":
@@ -1240,6 +1292,21 @@ class MarketplaceService:
                     enabled=True,
                     source=f"marketplace:{item_id}",
                     extra_metadata=metadata,
+                )
+
+                # 写入 swe_skills 表（分发时记录用户持有状态）
+                await self.skill_registry.insert_skill(
+                    skill_id=skill_id,
+                    skill_name=safe_skill_name,
+                    cn_name=cn_name,
+                    tenant_id=user["tenant_id"],
+                    tenant_name=user.get("tenant_name", ""),
+                    bbk_id=user.get("bbk_id", ""),
+                    source=f"marketplace:{item_id}",
+                    source_id=source_id,
+                    enabled=True,
+                    description=item.description,
+                    version_text=item.version,
                 )
                 count += 1
             except Exception as e:
@@ -1288,7 +1355,7 @@ class MarketplaceService:
         数据来源：
         - name、description：从 SKILL.md frontmatter 读取
         - source、distributed_by、received_version 等：从 workspace manifest 读取
-        - version：优先从 manifest，随后从 skill.json / SKILL.md 兼容回退
+        - 不再依赖技能目录内的 skill.json 文件
         """
         skills_dir = get_user_skills_dir(
             self.swe_root,
@@ -1347,80 +1414,6 @@ class MarketplaceService:
         version = _extract_version_from_frontmatter(md_content)
         return name, desc, version
 
-    def _resolve_user_skill_version(
-        self,
-        *,
-        skill_dir: Path,
-        manifest_metadata: dict[str, Any] | None = None,
-        skill_json: dict[str, Any] | None = None,
-    ) -> str:
-        """只读解析用户技能版本；找不到真实来源时返回空字符串."""
-        manifest_metadata = manifest_metadata or {}
-        version = _normalize_version_text(
-            manifest_metadata.get("version_text"),
-        )
-        if version:
-            return version
-
-        if isinstance(skill_json, dict):
-            version = _normalize_version_text(skill_json.get("version"))
-            if version:
-                return version
-
-        skill_json_path = skill_dir / "skill.json"
-        if skill_json_path.exists():
-            try:
-                file_skill_json = json.loads(
-                    skill_json_path.read_text(encoding="utf-8"),
-                )
-                if isinstance(file_skill_json, dict):
-                    version = _normalize_version_text(
-                        file_skill_json.get("version"),
-                    )
-                    if version:
-                        return version
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        skill_md_path = skill_dir / "SKILL.md"
-        if skill_md_path.exists():
-            try:
-                return _normalize_version_text(
-                    _extract_version_from_frontmatter(
-                        skill_md_path.read_text(encoding="utf-8"),
-                    ),
-                )
-            except OSError:
-                pass
-
-        return ""
-
-    def _get_source_skill_manifest_metadata(
-        self,
-        source_id: str,
-        req: PublishSkillRequest,
-    ) -> dict[str, Any]:
-        """读取来源用户 workspace manifest 中的技能元数据；失败时返回空 dict."""
-        if not req.skill_name:
-            return {}
-        try:
-            manifest = read_user_skill_manifest(
-                self.swe_root,
-                req.creator_id,
-                req.agent_id,
-                source_id,
-            )
-        except Exception:  # pylint: disable=broad-except
-            return {}
-
-        manifest_entry = manifest.get("skills", {}).get(req.skill_name)
-        if not isinstance(manifest_entry, dict):
-            return {}
-        manifest_metadata = manifest_entry.get("metadata")
-        if not isinstance(manifest_metadata, dict):
-            return {}
-        return manifest_metadata
-
     def _resolve_skill_display_fields(
         self,
         skill_dir: Path,
@@ -1428,16 +1421,14 @@ class MarketplaceService:
         manifest_metadata: dict[str, Any],
     ) -> tuple[str, str, str]:
         """合并 manifest 与 frontmatter，得到展示名称、描述和版本号."""
-        md_name, md_desc, _md_version = self._read_skill_frontmatter(
+        md_name, md_desc, md_version = self._read_skill_frontmatter(
             skill_dir,
             skill_name,
         )
         display_name = manifest_metadata.get("name") or md_name
         description = manifest_metadata.get("description") or md_desc
-        version = self._resolve_user_skill_version(
-            skill_dir=skill_dir,
-            manifest_metadata=manifest_metadata,
-        )
+        # 版本号优先使用 manifest_metadata，其次 frontmatter
+        version = manifest_metadata.get("version_text") or md_version
         return display_name, description, version
 
     def _resolve_skill_timestamps(
@@ -1453,6 +1444,36 @@ class MarketplaceService:
             "updated_at",
         )
         return created_at, updated_at
+
+    def _resolve_skill_id_cn_name(
+        self,
+        skill_dir: Path,
+        skill_name: str,
+        source: str,
+        manifest_metadata: dict[str, Any],
+    ) -> tuple[str, str]:
+        """获取 skill_id 和 cn_name 字段.
+
+        直接从 manifest_metadata 中读取，不再解析 SKILL.md。
+
+        Args:
+            skill_dir: 技能目录路径
+            skill_name: 技能目录名
+            source: 技能来源（customized / marketplace:xxx）
+            manifest_metadata: workspace manifest 中的 metadata 字段
+
+        Returns:
+            (skill_id, cn_name) 元组
+        """
+        # 直接使用 manifest 中的数据
+        skill_id = manifest_metadata.get("skill_id", "") or ""
+        cn_name = manifest_metadata.get("cn_name", "") or ""
+
+        # 如果 manifest 中没有 cn_name，使用 skill_name 作为 fallback
+        if not cn_name:
+            cn_name = skill_name
+
+        return skill_id, cn_name
 
     def _build_my_skill_item(
         self,
@@ -1481,6 +1502,12 @@ class MarketplaceService:
             manifest_entry,
             manifest_metadata,
         )
+        skill_id, cn_name = self._resolve_skill_id_cn_name(
+            skill_dir,
+            skill_name,
+            source,
+            manifest_metadata,
+        )
         is_received = source.startswith("marketplace:")
         has_update = (
             is_received
@@ -1506,6 +1533,8 @@ class MarketplaceService:
             creator_name=_decode_creator_name(creator_name or ""),
             created_at=created_at,
             updated_at=updated_at,
+            skill_id=skill_id,
+            cn_name=cn_name,
         )
 
     async def _get_stats(
@@ -1686,41 +1715,55 @@ class MarketplaceService:
         )
         return _read_preview_file(skill_dir, file_path)
 
-    def _resolve_next_skill_metadata_version(
+    def _bump_skill_version_in_frontmatter(
         self,
         skill_dir: Path,
-        manifest_version: str = "",
     ) -> str:
-        """Return the next system metadata version without rewriting SKILL.md."""
-        base_version = ""
-        skill_json_path = skill_dir / "skill.json"
-        if skill_json_path.exists():
-            try:
-                skill_data = json.loads(
-                    skill_json_path.read_text(encoding="utf-8"),
-                )
-                raw_version = skill_data.get("version")
-                if raw_version not in (None, ""):
-                    base_version = str(raw_version).strip()
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(
-                    "Failed to read skill.json version for %s: %s",
-                    skill_json_path,
-                    e,
-                )
+        """Bump SKILL.md frontmatter 中的 version 字段，返回新版本号."""
+        skill_md_path = skill_dir / "SKILL.md"
+        if not skill_md_path.exists():
+            return "1.0.1"
 
-        if not base_version and manifest_version:
-            base_version = str(manifest_version).strip()
+        try:
+            md_content = skill_md_path.read_text(encoding="utf-8")
+        except OSError:
+            return "1.0.1"
 
-        if not base_version:
-            skill_md_path = skill_dir / "SKILL.md"
-            try:
-                md_content = skill_md_path.read_text(encoding="utf-8")
-                base_version = _extract_version_from_frontmatter(md_content)
-            except OSError:
-                base_version = ""
+        current_version = (
+            _extract_version_from_frontmatter(md_content) or "1.0.0"
+        )
+        new_version = _bump_patch(current_version)
 
-        return _bump_patch(base_version or "1.0.0")
+        # 替换 frontmatter 中的 version 行
+        try:
+            end_idx = md_content.index("---", 3)
+        except ValueError:
+            return new_version
+
+        fm_text = md_content[3:end_idx]
+        lines = fm_text.split("\n")
+        replaced = False
+        for i, line in enumerate(lines):
+            if ":" in line:
+                key, _ = line.split(":", 1)
+                if key.strip().lower() == "version":
+                    lines[i] = f"version: {new_version}"
+                    replaced = True
+                    break
+
+        if not replaced:
+            # frontmatter 中没有 version 行，追加
+            lines.append(f"version: {new_version}")
+
+        new_fm = "\n".join(lines)
+        new_content = f"---\n{new_fm}\n---{md_content[end_idx + 3 :]}"
+
+        try:
+            skill_md_path.write_text(new_content, encoding="utf-8")
+        except OSError as e:
+            logger.warning("Failed to bump version in SKILL.md: %s", e)
+
+        return new_version
 
     def _bump_skill_version_in_manifest(
         self,
@@ -1752,6 +1795,85 @@ class MarketplaceService:
             source_id,
         )
 
+    def _update_skill_in_manifest(
+        self,
+        user_id: str,
+        skill_name: str,
+        new_version: str,
+        cn_name: str | None,
+        agent_id: str = "default",
+        source_id: str | None = None,
+    ) -> None:
+        """更新 manifest 中技能的 version_text、cn_name 和 updated_at."""
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _update(payload: dict) -> bool:
+            entry = payload.get("skills", {}).get(skill_name)
+            if entry is None:
+                return False
+            metadata = entry.get("metadata", {})
+            metadata["version_text"] = new_version
+            metadata["updated_at"] = now
+            if cn_name:
+                metadata["cn_name"] = cn_name
+            entry["metadata"] = metadata
+            entry["updated_at"] = now
+            return True
+
+        mutate_user_skill_manifest(
+            self.swe_root,
+            user_id,
+            agent_id,
+            _update,
+            source_id,
+        )
+
+    def _update_cn_name_in_frontmatter(
+        self,
+        skill_dir: Path,
+        cn_name: str,
+    ) -> None:
+        """更新 SKILL.md frontmatter 中的 metadata.cn_name."""
+        skill_md_path = skill_dir / "SKILL.md"
+        if not skill_md_path.exists():
+            return
+
+        try:
+            content = skill_md_path.read_text(encoding="utf-8")
+            from ..utils.skill_md import parse_frontmatter
+            import yaml
+
+            fm = parse_frontmatter(content)
+            metadata = fm.get("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["cn_name"] = cn_name
+                fm["metadata"] = metadata
+
+            # 重新生成 frontmatter
+            frontmatter_str = yaml.dump(
+                fm,
+                allow_unicode=True,
+                sort_keys=False,
+            )
+            new_content = f"---\n{frontmatter_str}---\n"
+
+            # 保留原有正文内容（frontmatter 之后的部分）
+            lines = content.split("\n")
+            body_start = 0
+            for i, line in enumerate(lines):
+                if i > 0 and line.strip() == "---":
+                    body_start = i + 1
+                    break
+
+            if body_start < len(lines):
+                body = "\n".join(lines[body_start:])
+                new_content += body
+
+            skill_md_path.write_text(new_content, encoding="utf-8")
+            logger.info("Updated cn_name in SKILL.md frontmatter: %s", cn_name)
+        except (OSError, yaml.YAMLError) as e:
+            logger.warning("Failed to update cn_name in frontmatter: %s", e)
+
     def save_skill_file(
         self,
         user_id: str,
@@ -1761,12 +1883,12 @@ class MarketplaceService:
         user_name: str | None = None,
         agent_id: str = "default",
         source_id: str | None = None,
-    ) -> bool:
-        """保存技能文件内容，自动创建 skill.json（如不存在）.
+        cn_name: str | None = None,
+    ) -> tuple[bool, str | None]:
+        """保存技能文件内容，可选更新中文名.
 
-        如果新内容与现有内容一致，则跳过写入和版本更新。
-        只有内容发生变化时，才 bump 系统元数据版本；不会为了版本管理
-        改写用户维护的 SKILL.md frontmatter。
+        返回:
+            (是否成功, 新版本号或None)
         """
         skills_dir = get_user_skills_dir(
             self.swe_root,
@@ -1780,10 +1902,10 @@ class MarketplaceService:
         try:
             target.resolve().relative_to(skill_dir.resolve())
         except ValueError:
-            return False
+            return False, None
 
         if not target.exists() or not target.is_file():
-            return False
+            return False, None
 
         # 读取现有内容，判断是否有变化
         try:
@@ -1791,103 +1913,165 @@ class MarketplaceService:
         except (OSError, UnicodeDecodeError):
             existing_content = None
 
-        if existing_content == content:
-            # 内容未变化，无需写入文件或更新版本
-            return True
+        content_changed = existing_content != content
+        cn_name_changed = cn_name and self._check_cn_name_changed(
+            skill_dir,
+            cn_name,
+        )
+
+        # 内容和中文名都没变化，无需写入文件
+        if not content_changed and not cn_name_changed:
+            return (True, None)
 
         try:
-            target.write_text(content, encoding="utf-8")
+            # 写入文件内容（如有变化）
+            if content_changed:
+                target.write_text(content, encoding="utf-8")
+                logger.info(
+                    "保存技能文件: user_id=%s, agent_id=%s, skill_name=%s, "
+                    "file_path=%s, workspace=%s",
+                    user_id,
+                    agent_id,
+                    skill_name,
+                    file_path,
+                    str(skill_dir),
+                )
 
             current_time = datetime.now(timezone.utc).isoformat()
-            manifest = read_user_skill_manifest(
-                self.swe_root,
-                user_id,
-                agent_id,
-                source_id,
-            )
-            manifest_entry = manifest.get("skills", {}).get(skill_name) or {}
-            manifest_metadata = manifest_entry.get("metadata") or {}
-            manifest_version = str(
-                manifest_metadata.get("version_text", "") or "",
-            )
 
-            new_version = self._resolve_next_skill_metadata_version(
-                skill_dir,
-                manifest_version,
-            )
+            # 更新 cn_name（如有变化）
+            if cn_name_changed and cn_name:
+                self._update_cn_name_in_frontmatter(skill_dir, cn_name)
+
+            # bump SKILL.md frontmatter 中的 version 字段
+            new_version = self._bump_skill_version_in_frontmatter(skill_dir)
 
             # 处理 skill.json：自动创建或更新
             skill_json_path = skill_dir / "skill.json"
+            self._update_skill_json_file(
+                skill_json_path,
+                skill_name,
+                new_version,
+                cn_name,
+                user_id,
+                user_name,
+                current_time,
+            )
 
-            if skill_json_path.exists():
-                # 更新现有 skill.json 的 updated_at 和 version
-                try:
-                    skill_data = json.loads(
-                        skill_json_path.read_text(encoding="utf-8"),
-                    )
-                    skill_data["updated_at"] = current_time
-                    skill_data["version"] = new_version
-                    skill_json_path.write_text(
-                        json.dumps(skill_data, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(
-                        "Failed to update skill.json updated_at: %s",
-                        e,
-                    )
-            else:
-                # 自动创建基础 skill.json
-                base_skill_data = {
-                    "name": skill_name,
-                    "description": "",
-                    "version": new_version,
-                    "creator_id": user_id,
-                    "creator_name": user_name or "",
-                    "created_at": current_time,
-                    "updated_at": current_time,
-                    "source": "customized",
-                }
-                try:
-                    skill_json_path.write_text(
-                        json.dumps(
-                            base_skill_data,
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                    logger.info(
-                        "Auto-created skill.json for %s",
-                        skill_name,
-                    )
-                except OSError as e:
-                    logger.warning(
-                        "Failed to auto-create skill.json: %s",
-                        e,
-                    )
-
-            # 同步 bump manifest 中的 version_text
-            self._bump_skill_version_in_manifest(
+            # 同步 bump manifest 中的 version_text 和 cn_name
+            self._update_skill_in_manifest(
                 user_id,
                 skill_name,
                 new_version,
+                cn_name,
                 agent_id,
                 source_id,
             )
 
-            return True
+            return (True, new_version)
         except Exception:
+            return (False, None)
+
+    def _check_cn_name_changed(self, skill_dir: Path, cn_name: str) -> bool:
+        """检查 SKILL.md frontmatter 中的 cn_name 是否需要更新.
+
+        Args:
+            skill_dir: 技能目录路径
+            cn_name: 新的中文名
+
+        Returns:
+            是否需要更新
+        """
+        skill_md_path = skill_dir / "SKILL.md"
+        if not skill_md_path.exists():
             return False
 
-    def delete_skill(
+        try:
+            md_content = skill_md_path.read_text(encoding="utf-8")
+            from ..utils.skill_md import parse_frontmatter
+
+            fm = parse_frontmatter(md_content)
+            metadata = fm.get("metadata", {})
+            if isinstance(metadata, dict):
+                existing_cn_name = metadata.get("cn_name", "")
+                logger.info(
+                    "cn_name check: existing=%s, new=%s, changed=%s",
+                    existing_cn_name,
+                    cn_name,
+                    cn_name != existing_cn_name,
+                )
+                return cn_name != existing_cn_name
+        except (OSError, UnicodeDecodeError):
+            return True  # 无法读取，假定需要更新
+
+        return False
+
+    def _update_skill_json_file(
+        self,
+        skill_json_path: Path,
+        skill_name: str,
+        new_version: str,
+        cn_name: str | None,
+        user_id: str,
+        user_name: str | None,
+        current_time: str,
+    ) -> None:
+        """更新或创建 skill.json 文件.
+
+        Args:
+            skill_json_path: skill.json 文件路径
+            skill_name: 技能名称
+            new_version: 新版本号
+            cn_name: 中文名（可选）
+            user_id: 用户 ID
+            user_name: 用户名（可选）
+            current_time: 当前时间字符串
+        """
+        if skill_json_path.exists():
+            # 更新现有 skill.json
+            try:
+                skill_data = json.loads(
+                    skill_json_path.read_text(encoding="utf-8"),
+                )
+                skill_data["updated_at"] = current_time
+                skill_data["version"] = new_version
+                if cn_name:
+                    skill_data["cn_name"] = cn_name
+                skill_json_path.write_text(
+                    json.dumps(skill_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to update skill.json updated_at: %s", e)
+        else:
+            # 自动创建基础 skill.json
+            base_skill_data = {
+                "name": skill_name,
+                "description": "",
+                "version": new_version,
+                "creator_id": user_id,
+                "creator_name": user_name or "",
+                "created_at": current_time,
+                "source": "customized",
+                "cn_name": cn_name or "",
+            }
+            try:
+                skill_json_path.write_text(
+                    json.dumps(base_skill_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info("Auto-created skill.json for %s", skill_name)
+            except OSError as e:
+                logger.warning("Failed to auto-create skill.json: %s", e)
+
+    async def delete_skill(
         self,
         user_id: str,
         skill_name: str,
         agent_id: str = "default",
         source_id: str | None = None,
     ) -> bool:
-        """删除用户技能（同时从 manifest 移除条目）。"""
+        """删除用户技能（同时从 manifest 移除条目并删除数据库记录）。"""
         import shutil
 
         skills_dir = get_user_skills_dir(
@@ -1917,6 +2101,13 @@ class MarketplaceService:
             agent_id,
             _remove,
             source_id,
+        )
+
+        # 删除数据库记录
+        await self.skill_registry.delete_skill(
+            user_id,
+            skill_name,
+            source_id or "",
         )
 
         return True
@@ -2765,6 +2956,193 @@ class MarketplaceService:
         item.updated_at = datetime.now(timezone.utc).isoformat()
         save_index(self.marketplace_root, source_id, items)
         return item
+
+    def _update_market_item_cn_name(
+        self,
+        source_id: str,
+        item_id: str,
+        chinese_name: str,
+    ) -> MarketItem:
+        """更新 index.json 中技能条目的 chinese_name."""
+        items = load_index(self.marketplace_root, source_id)
+        item = next(
+            (
+                i
+                for i in items
+                if i.item_id == item_id and i.item_type == "skill"
+            ),
+            None,
+        )
+        if item is None:
+            raise ValueError(f"Skill item '{item_id}' not found")
+
+        item.chinese_name = chinese_name
+        item.updated_at = datetime.now(timezone.utc).isoformat()
+        save_index(self.marketplace_root, source_id, items)
+        return item
+
+    def _check_cn_name_exists_in_frontmatter(self, skill_dir: Path) -> bool:
+        """检查 SKILL.md frontmatter 中是否存在 cn_name 字段."""
+        skill_md_path = skill_dir / "SKILL.md"
+        if not skill_md_path.exists():
+            return False
+
+        try:
+            content = skill_md_path.read_text(encoding="utf-8")
+            fm = parse_frontmatter(content)
+            metadata = fm.get("metadata", {})
+            return "cn_name" in metadata
+        except (OSError, UnicodeDecodeError):
+            return False
+
+    def _update_frontmatter_cn_name_if_exists(
+        self,
+        skill_dir: Path,
+        cn_name: str,
+    ) -> bool:
+        """条件更新 SKILL.md frontmatter，只有存在 cn_name 时才更新."""
+        if self._check_cn_name_exists_in_frontmatter(skill_dir):
+            self._update_cn_name_in_frontmatter(skill_dir, cn_name)
+            return True
+        return False
+
+    def _update_skill_manifest_cn_name_only(
+        self,
+        user_id: str,
+        skill_name: str,
+        cn_name: str,
+        agent_id: str = "default",
+        source_id: str | None = None,
+    ) -> bool:
+        """仅更新 manifest 中的 cn_name 字段."""
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _update(payload: dict) -> bool:
+            entry = payload.get("skills", {}).get(skill_name)
+            if entry is None:
+                return False
+            metadata = entry.get("metadata", {})
+            metadata["cn_name"] = cn_name
+            metadata["updated_at"] = now
+            entry["metadata"] = metadata
+            entry["updated_at"] = now
+            return True
+
+        return mutate_user_skill_manifest(
+            self.swe_root,
+            user_id,
+            agent_id,
+            _update,
+            source_id,
+        )
+
+    def _sync_cn_name_to_user_workspace(
+        self,
+        tenant_id: str,
+        skill_name: str,
+        cn_name: str,
+        source_id: str,
+    ) -> bool:
+        """同步更新单个用户 workspace 的技能名称文件."""
+        try:
+            skills_dir = get_user_skills_dir(
+                self.swe_root,
+                tenant_id,
+                "default",
+                source_id,
+            )
+            skill_dir = skills_dir / skill_name
+            if not skill_dir.exists():
+                return False
+
+            # 更新 manifest
+            self._update_skill_manifest_cn_name_only(
+                tenant_id,
+                skill_name,
+                cn_name,
+                "default",
+                source_id,
+            )
+            # 条件更新 SKILL.md
+            self._update_frontmatter_cn_name_if_exists(skill_dir, cn_name)
+            return True
+        except Exception as e:
+            logger.warning(
+                "Failed to sync cn_name to user %s: %s",
+                tenant_id,
+                e,
+            )
+            return False
+
+    async def update_skill_cn_name(
+        self,
+        source_id: str,
+        item_id: str,
+        skill_id: str,
+        skill_name: str,
+        chinese_name: str,
+        sync_to_users: bool,
+        target_user_ids: list[str],
+    ) -> dict:
+        """更新市场技能中文名，可选同步用户空间."""
+        # 1. 更新市场条目
+        item = self._update_market_item_cn_name(
+            source_id,
+            item_id,
+            chinese_name,
+        )
+
+        # 2. 若 sync_to_users=True，同步用户空间
+        synced_users = 0
+        errors = []
+        distribution_count = 0
+
+        if sync_to_users:
+            # 获取已分发用户列表
+            distributions = await self.get_distributions(
+                source_id,
+                item_id,
+                "skill",
+            )
+            distribution_count = len(distributions)
+            users_to_sync = target_user_ids or [
+                d.target_user_id for d in distributions
+            ]
+
+            for user_id in users_to_sync:
+                # 更新数据库
+                if self.skill_registry.is_connected():
+                    await self.skill_registry.update_cn_name_by_skill_id(
+                        skill_id,
+                        user_id,
+                        chinese_name,
+                    )
+                # 更新用户 workspace 文件
+                success = self._sync_cn_name_to_user_workspace(
+                    user_id,
+                    skill_name,
+                    chinese_name,
+                    source_id,
+                )
+                if success:
+                    synced_users += 1
+                else:
+                    errors.append(
+                        {
+                            "user_id": user_id,
+                            "reason": "workspace sync failed",
+                        },
+                    )
+
+        return {
+            "success": True,
+            "market_updated": True,
+            "synced_users": synced_users,
+            "skipped_users": (
+                distribution_count - synced_users if sync_to_users else 0
+            ),
+            "errors": errors,
+        }
 
     async def _get_mcp_stats(
         self,

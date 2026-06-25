@@ -66,4 +66,191 @@ export default createGlobalStyle`
     }
   }
 }
+
+.${(p) => p.theme.prefixCls}-response-process-disclosure {
+  width: 100%;
+  margin: 0 0 4px;
+
+  &-trigger {
+    display: flex;
+    align-items: center;
+    position: relative;
+    width: 100%;
+    min-height: 32px;
+    gap: 10px;
+    padding: 6px 10px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: ${({ theme }) => theme.colorFillAlter};
+    color: ${({ theme }) => theme.colorTextSecondary};
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    line-height: 20px;
+    text-align: left;
+    transition:
+      background-color 0.18s ease,
+      border-color 0.18s ease,
+      color 0.18s ease;
+
+    &:hover {
+      background: ${({ theme }) => theme.colorFillTertiary};
+      border-color: ${({ theme }) => theme.colorBorderSecondary};
+      color: ${({ theme }) => theme.colorText};
+    }
+
+    &[aria-expanded="true"] {
+      background: ${({ theme }) => theme.colorFillTertiary};
+    }
+
+    &:focus-visible {
+      outline: 2px solid ${({ theme }) => theme.colorPrimaryBorder};
+      outline-offset: 2px;
+    }
+
+    &[data-status="failed"] .${(p) =>
+      p.theme.prefixCls}-response-process-disclosure-status {
+      color: ${({ theme }) => theme.colorWarning};
+    }
+
+    &[data-status="running"] .${(p) =>
+      p.theme.prefixCls}-response-process-disclosure-status {
+      color: ${({ theme }) => theme.colorPrimary};
+    }
+
+    &[data-status="canceled"] .${(p) =>
+      p.theme.prefixCls}-response-process-disclosure-status {
+      color: ${({ theme }) => theme.colorTextTertiary};
+    }
+  }
+
+  &-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    border-radius: ${({ theme }) => theme.borderRadiusSM}px;
+    background: transparent;
+    color: ${({ theme }) => theme.colorTextTertiary};
+    transition:
+      background-color 0.18s ease,
+      color 0.18s ease;
+
+    svg {
+      width: 12px;
+      height: 12px;
+    }
+  }
+
+  &-trigger:hover &-chevron {
+    color: ${({ theme }) => theme.colorTextSecondary};
+  }
+
+  &-trigger[aria-expanded="true"] &-chevron {
+    background: transparent;
+    color: ${({ theme }) => theme.colorTextSecondary};
+  }
+
+  &-copy {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  &-title {
+    color: ${({ theme }) => theme.colorTextSecondary};
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  &-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    color: ${({ theme }) => theme.colorTextTertiary};
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &-meta > span {
+    flex: 0 0 auto;
+  }
+
+  &-metric {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+
+    svg {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 14px;
+      color: currentColor;
+    }
+  }
+
+  &-status {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: ${({ theme }) => theme.colorSuccess};
+    font-size: 12px;
+    line-height: 20px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  &-action {
+    flex: 0 0 auto;
+    color: ${({ theme }) => theme.colorTextTertiary};
+    font-weight: 500;
+    white-space: nowrap;
+    transition: color 0.18s ease;
+  }
+
+  &-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+    overflow: hidden;
+    animation: ${(p) =>
+      p.theme.prefixCls}-response-process-disclosure-open 0.18s ease-out;
+  }
+
+  &-body[hidden] {
+    display: none;
+  }
+}
+
+@keyframes ${(p) => p.theme.prefixCls}-response-process-disclosure-open {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .${(p) => p.theme.prefixCls}-response-process-disclosure {
+    &-trigger {
+      transition: none;
+    }
+
+    &-chevron {
+      transition: none;
+    }
+
+    &-body {
+      animation: none;
+    }
+  }
+}
 `;

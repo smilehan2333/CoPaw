@@ -32,7 +32,6 @@ import { cronJobApi } from "../../api/modules/cronjob";
 import { feedbackApi } from "../../api/modules/feedback";
 import { getApiUrl } from "../../api/config";
 import { buildAuthHeaders } from "../../api/authHeaders";
-import { providerApi } from "../../api/modules/provider";
 import type {
   ProviderInfo,
   ModelInfo,
@@ -43,6 +42,7 @@ import ModelSelector from "./ModelSelector";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useAgentStore } from "../../stores/agentStore";
 import { useSourceSystemConfigStore } from "../../stores/sourceSystemConfigStore";
+import { useProviderModelStore } from "../../stores/providerModelStore";
 // ==================== 组件引入方式变更 (Kun He) ====================
 import { useChatAnywhereInput } from "@/components/agentscope-chat";
 import DragUploadOverlay from "@/components/agentscope-chat/DragUploadOverlay";
@@ -58,7 +58,7 @@ import { useBrandTheme } from "../../contexts/BrandThemeContext";
 import { useIframeStore } from "../../stores/iframeStore";
 // ==================== URL 导航参数结束 ====================
 import styles from "./index.module.less";
-import { IconButton } from "@agentscope-ai/design";
+import { Form, IconButton } from "@agentscope-ai/design";
 // import ChatActionGroup from "./components/ChatActionGroup";
 import ChatHeaderTitle from "./components/ChatHeaderTitle";
 import ChatSessionInitializer from "./components/ChatSessionInitializer";
@@ -85,6 +85,18 @@ import {
   getTaskOpenTarget,
   shouldMarkTaskReadOnOpen,
 } from "./taskJobs";
+import {
+  CronJobFormBody,
+  DEFAULT_FORM_VALUES,
+} from "../Control/CronJobs/components";
+import {
+  buildCronJobFormValues,
+} from "../Control/CronJobs/helpers";
+import { useExecutionModelOptions } from "@/hooks/useExecutionModelOptions";
+import {
+  submitCronTaskEdit,
+  type CronTaskEditFormValues,
+} from "./taskEditSubmit";
 import { shouldRefreshCurrentTaskMessages } from "./taskMessageRefresh";
 import { resolveCurrentFileUrlNetwork } from "./fileUrlNetwork";
 import { matchesResolvedChatId } from "./sessionApi/resolvedSessionMapping";
@@ -349,26 +361,22 @@ function useIMEComposition(isChatActive: () => boolean) {
 
 /** Fetch and track multimodal capabilities for the active model. */
 function useMultimodalCapabilities(
-  refreshKey: number,
+  modelRefreshKey: number,
   locationPathname: string,
   isChatActive: () => boolean,
-  selectedAgent: string,
 ) {
   const [multimodalCaps, setMultimodalCaps] = useState<{
     supportsMultimodal: boolean;
     supportsImage: boolean;
     supportsVideo: boolean;
   }>({ supportsMultimodal: false, supportsImage: false, supportsVideo: false });
+  const loadModelData = useProviderModelStore((state) => state.loadModelData);
 
   const fetchMultimodalCaps = useCallback(async () => {
     try {
-      const [providers, activeModels] = await Promise.all([
-        providerApi.listProviders(),
-        providerApi.getActiveModels({
-          scope: "effective",
-          agent_id: selectedAgent,
-        }),
-      ]);
+      const { providers, activeModels } = await loadModelData({
+        scope: "effective",
+      });
       const activeProviderId = activeModels?.active_llm?.provider_id;
       const activeModelId = activeModels?.active_llm?.model;
       if (!activeProviderId || !activeModelId) {
@@ -407,12 +415,12 @@ function useMultimodalCapabilities(
         supportsVideo: false,
       });
     }
-  }, [selectedAgent]);
+  }, [loadModelData]);
 
-  // Fetch caps on mount and whenever refreshKey changes
+  // Fetch caps on mount and whenever modelRefreshKey changes
   useEffect(() => {
     fetchMultimodalCaps();
-  }, [fetchMultimodalCaps, refreshKey]);
+  }, [fetchMultimodalCaps, modelRefreshKey]);
 
   // Also poll caps when navigating back to chat
   useEffect(() => {
@@ -486,20 +494,33 @@ export default function ChatPage() {
     null,
   );
   const { selectedAgent } = useAgentStore();
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [feedbackRefreshKey, setFeedbackRefreshKey] = useState(0);
   const [autoPreviewTriggerKey, setAutoPreviewTriggerKey] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
   const runtimeLoadingBridgeRef = useRef<RuntimeLoadingBridgeApi | null>(null);
   const { message } = useAppMessage();
+  const [taskEditForm] = Form.useForm<CronJobSpecOutput>();
+  const [editingTask, setEditingTask] = useState<CronJobSpecOutput | null>(
+    null,
+  );
+  const [taskEditSaving, setTaskEditSaving] = useState(false);
+  const {
+    loading: executionModelLoading,
+    options: executionModelOptions,
+    tenantDefaultLabel,
+  } = useExecutionModelOptions(true);
   const {
     sessions,
     setSessionLoading,
-    setSessions,
     currentSessionId: activeSessionId,
   } = useChatAnywhereSessionsState();
   const sourceSystemConfig = useSourceSystemConfigStore(
     (state) => state.config,
+  );
+  const loadActiveModelData = useProviderModelStore(
+    (state) => state.loadActiveModelData,
   );
   const taskProgressEnabled = isChatTaskProgressEnabled(sourceSystemConfig);
 
@@ -582,10 +603,9 @@ export default function ChatPage() {
   // Use custom hooks for better separation of concerns
   const isComposingRef = useIMEComposition(isChatActive);
   const multimodalCaps = useMultimodalCapabilities(
-    refreshKey,
+    modelRefreshKey,
     location.pathname,
     isChatActive,
-    selectedAgent,
   );
 
   const lastSessionIdRef = useRef<string | null>(null);
@@ -759,8 +779,7 @@ export default function ChatPage() {
       prevSelectedAgentRef.current !== selectedAgent &&
       prevSelectedAgentRef.current !== undefined
     ) {
-      // Force re-render by updating refresh key
-      setRefreshKey((prev) => prev + 1);
+      setModelRefreshKey((prev) => prev + 1);
     }
     prevSelectedAgentRef.current = selectedAgent;
   }, [selectedAgent]);
@@ -796,16 +815,14 @@ export default function ChatPage() {
     [feedbackUserId],
   );
   const feedbackChatId = useMemo(() => {
-    const routeChatId = chatId
-      ? sessionApi.getChatIdForSession(chatId)
-      : null;
+    const routeChatId = chatId ? sessionApi.getChatIdForSession(chatId) : null;
     if (routeChatId) {
       return routeChatId;
     }
 
     const fallbackSessionId = activeSessionId || window.currentSessionId || "";
     return sessionApi.getChatIdForSession(fallbackSessionId);
-  }, [chatId, activeSessionId, refreshKey]);
+  }, [chatId, activeSessionId]);
   const feedbackSessionId = useMemo(() => {
     const activeSession = sessions.find(
       (session) =>
@@ -845,7 +862,7 @@ export default function ChatPage() {
   const lastFeedbackSessionIdRef = useRef<string | null>(null);
   const feedbackLookupPending = Boolean(
     feedbackAllowed &&
-    feedbackSessionId &&
+      feedbackSessionId &&
       (feedbackLoading ||
         feedbackSessionId !== lastFeedbackSessionIdRef.current),
   );
@@ -896,7 +913,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [feedbackAllowed, feedbackChatId, feedbackSessionId, refreshKey]);
+  }, [feedbackAllowed, feedbackChatId, feedbackSessionId, feedbackRefreshKey]);
 
   const handleFeedbackSaved = useCallback((feedback: FeedbackRecord) => {
     setFeedbackItems((prev) => [
@@ -946,7 +963,8 @@ export default function ChatPage() {
   useEffect(() => {
     const hadResult = Boolean(currentTask?.task?.has_scheduled_result);
     if (hadResult && !taskHadResultRef.current) {
-      setRefreshKey((prev) => prev + 1);
+      void chatRef.current?.refreshSession?.();
+      setFeedbackRefreshKey((prev) => prev + 1);
     }
     taskHadResultRef.current = hadResult;
   }, [currentTask?.task?.has_scheduled_result]);
@@ -1135,6 +1153,49 @@ export default function ChatPage() {
     [message, navigate, refreshJobs],
   );
 
+  const handleTaskEdit = useCallback(
+    (task: CronJobSpecOutput) => {
+      setEditingTask(task);
+      taskEditForm.setFieldsValue(
+        buildCronJobFormValues(task) as Parameters<
+          typeof taskEditForm.setFieldsValue
+        >[0],
+      );
+    },
+    [taskEditForm],
+  );
+
+  const handleTaskEditClose = useCallback(() => {
+    if (taskEditSaving) return;
+    setEditingTask(null);
+    taskEditForm.resetFields();
+  }, [taskEditForm, taskEditSaving]);
+
+  const handleTaskEditSubmit = useCallback(
+    async (values: CronTaskEditFormValues) => {
+      if (!editingTask) return;
+
+      setTaskEditSaving(true);
+      try {
+        await submitCronTaskEdit(
+          editingTask,
+          values,
+          cronJobApi.replaceCronJob,
+        );
+        message.success("任务已更新");
+        setEditingTask(null);
+        taskEditForm.resetFields();
+        void refreshJobs();
+      } catch (error) {
+        console.error("Failed to update cron task from chat sidebar:", error);
+        message.error(error instanceof SyntaxError ? "任务配置格式不正确" : "保存失败");
+      } finally {
+        setTaskEditSaving(false);
+      }
+    },
+    [editingTask, message, refreshJobs, taskEditForm],
+  );
+
   useEffect(() => {
     const previousTask = previousCurrentTaskRef.current;
     previousCurrentTaskRef.current = currentTask;
@@ -1226,9 +1287,8 @@ export default function ChatPage() {
       };
 
       try {
-        const activeModels = await providerApi.getActiveModels({
+        const activeModels = await loadActiveModelData({
           scope: "effective",
-          agent_id: selectedAgent,
         });
         if (
           !activeModels?.active_llm?.provider_id ||
@@ -1334,7 +1394,7 @@ export default function ChatPage() {
         timeoutSignal.cleanup();
       }
     },
-    [resolveLogicalRequestSessionId, resolveRequestChatId, selectedAgent],
+    [loadActiveModelData, resolveLogicalRequestSessionId, resolveRequestChatId],
   );
 
   const handleFileUpload = useCallback(
@@ -1429,25 +1489,24 @@ export default function ChatPage() {
   }, []);
   // ==================== Drag & drop end ====================
 
-  const feedbackRenderContextValue =
-    useMemo<ChatFeedbackRenderContextValue>(
-      () => ({
-        feedbackChatId,
-        feedbackLookup,
-        feedbackLookupPending,
-        feedbackSessionId,
-        feedbackTask,
-        onFeedbackSaved: handleFeedbackSaved,
-      }),
-      [
-        feedbackChatId,
-        feedbackLookup,
-        feedbackLookupPending,
-        feedbackSessionId,
-        feedbackTask,
-        handleFeedbackSaved,
-      ],
-    );
+  const feedbackRenderContextValue = useMemo<ChatFeedbackRenderContextValue>(
+    () => ({
+      feedbackChatId,
+      feedbackLookup,
+      feedbackLookupPending,
+      feedbackSessionId,
+      feedbackTask,
+      onFeedbackSaved: handleFeedbackSaved,
+    }),
+    [
+      feedbackChatId,
+      feedbackLookup,
+      feedbackLookupPending,
+      feedbackSessionId,
+      feedbackTask,
+      handleFeedbackSaved,
+    ],
+  );
   const htmlPreviewTrackingContextValue = useMemo(
     () => ({
       cronTaskId: feedbackTask?.cronTaskId || null,
@@ -1715,6 +1774,7 @@ export default function ChatPage() {
                 onTaskRun={handleTaskRun}
                 onTaskResume={handleTaskResume}
                 onTaskDelete={handleTaskDelete}
+                onTaskEdit={handleTaskEdit}
               />
               {/* ==================== 首页改版结束 ==================== */}
               <div
@@ -1725,7 +1785,7 @@ export default function ChatPage() {
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
               >
-                <AgentScopeRuntimeWebUILayout ref={chatRef} key={refreshKey} />
+                <AgentScopeRuntimeWebUILayout ref={chatRef} />
                 <DragUploadOverlay
                   visible={isDragging}
                   onClose={handleDragOverlayClose}
@@ -1736,6 +1796,48 @@ export default function ChatPage() {
           </AutoPreviewHtmlProvider>
         </HtmlPreviewTrackingProvider>
       </ChatFeedbackRenderProvider>
+
+      <Modal
+        open={Boolean(editingTask)}
+        title="编辑任务"
+        width="min(760px, calc(100vw - 32px))"
+        className={styles.taskEditModal}
+        centered
+        destroyOnClose
+        maskClosable={!taskEditSaving}
+        keyboard={!taskEditSaving}
+        onCancel={handleTaskEditClose}
+        footer={
+          <div className={styles.taskEditModalFooter}>
+            <Button onClick={handleTaskEditClose} disabled={taskEditSaving}>
+              取消
+            </Button>
+            <Button
+              type="primary"
+              loading={taskEditSaving}
+              onClick={() => taskEditForm.submit()}
+            >
+              保存
+            </Button>
+          </div>
+        }
+      >
+        <Form
+          form={taskEditForm}
+          layout="vertical"
+          onFinish={handleTaskEditSubmit}
+          initialValues={DEFAULT_FORM_VALUES}
+          className={styles.taskEditForm}
+        >
+          <CronJobFormBody
+            form={taskEditForm}
+            executionModelOptions={executionModelOptions}
+            executionModelLoading={executionModelLoading}
+            tenantDefaultModelLabel={tenantDefaultLabel}
+            idDisabled
+          />
+        </Form>
+      </Modal>
 
       <Modal
         open={showModelPrompt}
@@ -1751,40 +1853,40 @@ export default function ChatPage() {
             : undefined,
         }}
       >
-          <Result
-            icon={<ExclamationCircleOutlined style={{ color: "#faad14" }} />}
-            title={
-              <span
-                style={{ color: isDark ? "rgba(255,255,255,0.88)" : undefined }}
-              >
-                {t("modelConfig.promptTitle")}
-              </span>
-            }
-            subTitle={
-              <span
-                style={{ color: isDark ? "rgba(255,255,255,0.55)" : undefined }}
-              >
-                {t("modelConfig.promptMessage")}
-              </span>
-            }
-            extra={[
-              <Button key="skip" onClick={() => setShowModelPrompt(false)}>
-                {t("modelConfig.skipButton")}
-              </Button>,
-              <Button
-                key="configure"
-                type="primary"
-                icon={<SettingOutlined />}
-                onClick={() => {
-                  setShowModelPrompt(false);
-                  navigate("/models");
-                }}
-              >
-                {t("modelConfig.configureButton")}
-              </Button>,
-            ]}
-          />
-        </Modal>
+        <Result
+          icon={<ExclamationCircleOutlined style={{ color: "#faad14" }} />}
+          title={
+            <span
+              style={{ color: isDark ? "rgba(255,255,255,0.88)" : undefined }}
+            >
+              {t("modelConfig.promptTitle")}
+            </span>
+          }
+          subTitle={
+            <span
+              style={{ color: isDark ? "rgba(255,255,255,0.55)" : undefined }}
+            >
+              {t("modelConfig.promptMessage")}
+            </span>
+          }
+          extra={[
+            <Button key="skip" onClick={() => setShowModelPrompt(false)}>
+              {t("modelConfig.skipButton")}
+            </Button>,
+            <Button
+              key="configure"
+              type="primary"
+              icon={<SettingOutlined />}
+              onClick={() => {
+                setShowModelPrompt(false);
+                navigate("/models");
+              }}
+            >
+              {t("modelConfig.configureButton")}
+            </Button>,
+          ]}
+        />
+      </Modal>
     </AgentScopeRuntimeWebUIComposedProvider>
   );
 }

@@ -27,8 +27,7 @@ export const CONSOLE_MANAGEMENT_TOKENS = {
   colorPrimaryHover: "#2957DC",
   colorPrimarySoft: "#EEF4FF",
 
-  fontUi:
-    '"Segoe UI", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif',
+  fontUi: '"Segoe UI", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif',
   fontEditorial: 'Georgia, "Songti SC", "SimSun", serif',
   fontMono: 'SFMono-Regular, Consolas, "Liberation Mono", monospace',
 

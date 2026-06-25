@@ -1,7 +1,6 @@
 {
   "SWE_LOG_LEVEL": "debug",
   "SWE_OPENAPI_DOCS": "true",
-  "SWE_FILE_LOG_ENABLED": "false",
   "SWE_CORS_ORIGINS": "*",
   "SWE_LLM_MAX_CONCURRENT": "5",
   "SWE_LLM_MAX_QPM": "100",

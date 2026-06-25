@@ -25,6 +25,7 @@ __all__ = [
     "init_trace_manager",
     "close_trace_manager",
     "get_current_trace",
+    "capture_current_trace_context",
     "set_current_trace",
     "has_trace_manager",
     # Store
@@ -62,6 +63,7 @@ def __getattr__(name: str):
         "init_trace_manager",
         "close_trace_manager",
         "get_current_trace",
+        "capture_current_trace_context",
         "set_current_trace",
         "has_trace_manager",
     }:
@@ -72,6 +74,7 @@ def __getattr__(name: str):
             init_trace_manager as _init_trace_manager,
             close_trace_manager as _close_trace_manager,
             get_current_trace as _get_current_trace,
+            capture_current_trace_context as _capture_current_trace_context,
             set_current_trace as _set_current_trace,
             has_trace_manager as _has_trace_manager,
         )
@@ -83,6 +86,7 @@ def __getattr__(name: str):
             "init_trace_manager": _init_trace_manager,
             "close_trace_manager": _close_trace_manager,
             "get_current_trace": _get_current_trace,
+            "capture_current_trace_context": _capture_current_trace_context,
             "set_current_trace": _set_current_trace,
             "has_trace_manager": _has_trace_manager,
         }

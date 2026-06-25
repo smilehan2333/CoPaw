@@ -79,6 +79,14 @@ class Span(BaseModel):
         default=None,
         description="Skill name for skill events",
     )
+    skill_id: Optional[str] = Field(
+        default=None,
+        description="Skill unique identifier",
+    )
+    skill_cn_name: Optional[str] = Field(
+        default=None,
+        description="Skill Chinese display name",
+    )
     skill_description: Optional[str] = Field(
         default=None,
         description="Skill description from SKILL.md",

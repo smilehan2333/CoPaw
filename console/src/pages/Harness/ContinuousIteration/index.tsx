@@ -39,6 +39,7 @@ import dayjs from "dayjs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { dreamLogsApi } from "../../../api/modules/dreamLogs";
+import { useIframeStore } from "../../../stores/iframeStore";
 import type {
   DreamLogRecord,
   DreamLogsStats,
@@ -48,6 +49,7 @@ import StatsCards from "./components/StatsCards";
 import FileDiffModal from "./components/FileDiffModal";
 import BackupFiles from "./components/BackupFiles";
 import OrphanFiles from "./components/OrphanFiles";
+import ArchiveGovernance from "./components/ArchiveGovernance";
 import styles from "./index.module.less";
 
 const { Text } = Typography;
@@ -55,9 +57,13 @@ const { RangePicker } = DatePicker;
 
 const POLL_INTERVAL = 2000;
 const POLL_TIMEOUT = 30 * 60 * 1000;
+type TopTabKey = "records" | "backups" | "cleanup" | "archive-governance";
 
 export default function ContinuousIterationPage() {
   const { t } = useTranslation();
+  const isSuperManager = useIframeStore((state) => state.isSuperManager);
+  const manager = useIframeStore((state) => state.manager);
+  const canManageArchive = isSuperManager || manager;
   const [loading, setLoading] = useState(true);
   const [records, setRecords] = useState<DreamLogRecord[]>([]);
   const [stats, setStats] = useState<DreamLogsStats | null>(null);
@@ -75,13 +81,20 @@ export default function ContinuousIterationPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [runningStartedAt, setRunningStartedAt] = useState<string | null>(null);
   const [runningTrigger, setRunningTrigger] = useState<"cron" | "manual" | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Filter state
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [triggerFilter, setTriggerFilter] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TopTabKey>("records");
+  const [tabRefreshKeys, setTabRefreshKeys] = useState<
+    Record<Exclude<TopTabKey, "records">, number>
+  >({
+    backups: 0,
+    cleanup: 0,
+    "archive-governance": 0,
+  });
 
   useEffect(() => {
     fetchData();
@@ -101,6 +114,20 @@ export default function ContinuousIterationPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleTabChange = (key: string) => {
+    const nextTab = key as TopTabKey;
+    setActiveTab(nextTab);
+    if (nextTab === "records") {
+      fetchData();
+      checkStatus();
+      return;
+    }
+    setTabRefreshKeys((current) => ({
+      ...current,
+      [nextTab]: current[nextTab] + 1,
+    }));
   };
 
   // 查询运行状态
@@ -123,7 +150,6 @@ export default function ContinuousIterationPage() {
     const startTime = Date.now();
     pollingRef.current = setInterval(async () => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      setElapsedSeconds(elapsed);
 
       if (elapsed * 1000 >= POLL_TIMEOUT) {
         stopPolling();
@@ -137,7 +163,6 @@ export default function ContinuousIterationPage() {
         if (!result.running) {
           stopPolling();
           setIsRunning(false);
-          setElapsedSeconds(0);
           fetchData();
         }
       } catch {
@@ -153,13 +178,6 @@ export default function ContinuousIterationPage() {
       clearInterval(pollingRef.current);
       pollingRef.current = null;
     }
-  };
-
-  const formatElapsed = (seconds: number): string => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    if (m > 0) return `${m}m ${s}s`;
-    return `${s}s`;
   };
 
   // Filter records based on date range and status
@@ -198,7 +216,6 @@ export default function ContinuousIterationPage() {
         setIsRunning(true);
         setRunningTrigger("manual");
         setRunningStartedAt(new Date().toISOString());
-        setElapsedSeconds(0);
         startPolling();
       } else {
         message.error(result.message);
@@ -474,9 +491,6 @@ export default function ContinuousIterationPage() {
                   ? t("dreamLogs.running.autoTitle")
                   : t("dreamLogs.running.title")}
               </Text>
-              <Text type="secondary">
-                {t("dreamLogs.running.elapsed")}: {formatElapsed(elapsedSeconds)}
-              </Text>
             </Space>
           }
         />
@@ -612,7 +626,7 @@ export default function ContinuousIterationPage() {
           {t("dreamLogs.tabBackups")}
         </Space>
       ),
-      children: <BackupFiles />,
+      children: <BackupFiles refreshKey={tabRefreshKeys.backups} />,
     },
     {
       key: "cleanup",
@@ -622,13 +636,36 @@ export default function ContinuousIterationPage() {
           {t("dreamLogs.tabCleanup")}
         </Space>
       ),
-      children: <OrphanFiles />,
+      children: <OrphanFiles refreshKey={tabRefreshKeys.cleanup} />,
     },
+    ...(canManageArchive
+      ? [
+          {
+            key: "archive-governance",
+            label: (
+              <Space>
+                <DatabaseOutlined />
+                归档治理
+              </Space>
+            ),
+            children: (
+              <ArchiveGovernance
+                refreshKey={tabRefreshKeys["archive-governance"]}
+              />
+            ),
+          },
+        ]
+      : []),
   ];
 
   return (
     <div className={styles.container}>
-      <Tabs className={styles.customTabs} defaultActiveKey="records" items={tabItems} />
+      <Tabs
+        className={styles.customTabs}
+        activeKey={activeTab}
+        items={tabItems}
+        onChange={handleTabChange}
+      />
       <FileDiffModal
         visible={diffModalVisible}
         record={selectedRecord}

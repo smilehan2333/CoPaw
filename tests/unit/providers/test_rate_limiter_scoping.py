@@ -13,7 +13,12 @@ from swe.providers.rate_limiter import (
     get_rate_limiter,
     reset_rate_limiter,
 )
-from swe.providers.retry_chat_model import RateLimitConfig, RetryChatModel
+from swe.providers.retry_chat_model import (
+    EmptyModelOutputError,
+    RateLimitConfig,
+    RetryChatModel,
+    RetryConfig,
+)
 from swe.config.llm_workload import (
     LLM_WORKLOAD_CHAT,
     LLM_WORKLOAD_CRON,
@@ -26,7 +31,27 @@ class _StaticChatModel(ChatModelBase):
         super().__init__(model_name="test-model", stream=False)
 
     async def __call__(self, *args, **kwargs):
-        return ChatResponse(content=[])
+        return ChatResponse(content=[{"type": "text", "text": "ok"}])
+
+
+class _SequenceChatModel(ChatModelBase):
+    def __init__(self, responses):
+        super().__init__(model_name="test-model", stream=False)
+        self.responses = list(responses)
+        self.calls = 0
+
+    async def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if not self.responses:
+            raise AssertionError("sequence model has no response left")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class _TransientServerError(RuntimeError):
+    status_code = 500
 
 
 class _BlockingStreamChatModel(ChatModelBase):
@@ -39,6 +64,27 @@ class _BlockingStreamChatModel(ChatModelBase):
             yield ChatResponse(content=[])
             await self._release_second_chunk.wait()
             yield ChatResponse(content=[])
+
+        return _stream()
+
+
+class _SequenceStreamChatModel(ChatModelBase):
+    def __init__(self, streams):
+        super().__init__(model_name="test-model", stream=True)
+        self.streams = list(streams)
+        self.calls = 0
+
+    async def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if not self.streams:
+            raise AssertionError("sequence stream model has no stream left")
+        chunks = self.streams.pop(0)
+        if isinstance(chunks, Exception):
+            raise chunks
+
+        async def _stream():
+            for chunk in chunks:
+                yield chunk
 
         return _stream()
 
@@ -428,6 +474,180 @@ async def test_retry_chat_model_resolves_workload_at_call_time():
 
     assert cron.stats()["total_acquired"] == 1
     assert chat.stats()["total_acquired"] == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_model_output_retries_once_when_llm_retry_disabled():
+    bottom = _SequenceChatModel(
+        [
+            ChatResponse(content=[]),
+            ChatResponse(content=[{"type": "text", "text": "retry ok"}]),
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=False, max_retries=1),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    response = await model()
+
+    assert response.content[0]["text"] == "retry ok"
+    assert bottom.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_model_output_retry_does_not_consume_transient_retries():
+    bottom = _SequenceChatModel(
+        [
+            ChatResponse(content=[]),
+            _TransientServerError("first transient failure"),
+            _TransientServerError("second transient failure"),
+            ChatResponse(content=[{"type": "text", "text": "retry ok"}]),
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=True, max_retries=2),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    response = await model()
+
+    assert response.content[0]["text"] == "retry ok"
+    assert bottom.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_empty_model_output_raises_after_single_retry_is_exhausted():
+    bottom = _SequenceChatModel(
+        [
+            ChatResponse(content=[]),
+            ChatResponse(content="   "),
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=False, max_retries=1),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    with pytest.raises(EmptyModelOutputError, match="empty model output"):
+        await model()
+
+    assert bottom.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_model_output_does_not_retry_as_empty():
+    bottom = _SequenceChatModel(
+        [
+            ChatResponse(content=[{"type": "thinking", "text": ""}]),
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=False, max_retries=1),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    response = await model()
+
+    assert response.content[0]["type"] == "thinking"
+    assert bottom.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_model_output_retries_whole_call_once():
+    bottom = _SequenceStreamChatModel(
+        [
+            [ChatResponse(content=[])],
+            [
+                ChatResponse(
+                    content=[{"type": "text", "text": "stream retry ok"}],
+                ),
+            ],
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=False, max_retries=1),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    stream = await model()
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks[-1].content[0]["text"] == "stream retry ok"
+    assert bottom.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_output_retry_does_not_consume_transient_retries():
+    bottom = _SequenceStreamChatModel(
+        [
+            [ChatResponse(content=[])],
+            _TransientServerError("first transient failure"),
+            _TransientServerError("second transient failure"),
+            [
+                ChatResponse(
+                    content=[{"type": "text", "text": "stream retry ok"}],
+                ),
+            ],
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=True, max_retries=2),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    stream = await model()
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks[-1].content[0]["text"] == "stream retry ok"
+    assert bottom.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_model_output_raises_after_single_retry():
+    bottom = _SequenceStreamChatModel(
+        [
+            [ChatResponse(content=[])],
+            [ChatResponse(content=None)],
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=False, max_retries=1),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    stream = await model()
+    with pytest.raises(EmptyModelOutputError, match="empty model output"):
+        _chunks = [chunk async for chunk in stream]
+
+    assert bottom.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_output_does_not_retry_as_empty():
+    bottom = _SequenceStreamChatModel(
+        [
+            [ChatResponse(content=[{"type": "reasoning", "text": ""}])],
+        ],
+    )
+    model = RetryChatModel(
+        bottom,
+        retry_config=RetryConfig(enabled=False, max_retries=1),
+        rate_limit_config=RateLimitConfig(max_qpm=0),
+    )
+
+    stream = await model()
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks[0].content[0]["type"] == "reasoning"
+    assert bottom.calls == 1
 
 
 @pytest.mark.asyncio

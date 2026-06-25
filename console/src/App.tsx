@@ -25,6 +25,7 @@ import { buildAuthHeaders } from "./api/authHeaders";
 import "./styles/layout.css";
 import "./styles/form-override.css";
 import "./styles/console-theme.css";
+import { DynamicRenderProvider } from "./components/agentscope-chat/DynamicRenderContext";
 
 const GlobalStyle = createGlobalStyle`
 * {
@@ -155,11 +156,13 @@ function App() {
 
   return (
     <ThemeProvider>
+      <DynamicRenderProvider>
       {/* ==================== 品牌主题 (Kun He) ==================== */}
       {/* 包裹 BrandThemeProvider，根据 source 动态切换品牌配置 */}
       <BrandThemeProvider>
         <AppInner />
       </BrandThemeProvider>
+      </DynamicRenderProvider>
       {/* ==================== 品牌主题结束 ==================== */}
     </ThemeProvider>
   );

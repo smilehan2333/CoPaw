@@ -937,15 +937,22 @@ class CronExecutor:
         )
         assert job.request is not None
         req = self._build_agent_request(job, target_user_id, target_session_id)
-        self._apply_auth_token(job, dispatch_meta, req)
-
         trace_id = await self._create_trace_for_agent_job(
             job,
             target_user_id,
             target_session_id,
         )
+
+        try:
+            self._apply_auth_token(job, dispatch_meta, req)
+        except Exception as exc:
+            await self._handle_agent_generic_exception(job, trace_id, exc)
+            setattr(exc, "cron_trace_id", trace_id)
+            raise
+
         if trace_id:
             req["trace_id"] = trace_id
+            req["trace_attach_existing"] = True
 
         return runtime_tenant_id, trace_id, req, AgentStreamState()
 

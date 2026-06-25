@@ -179,19 +179,35 @@ def build_cron_bbk_in_filter(bbk_ids: Optional[str]) -> tuple[str, list[str]]:
     return f" AND j.bbk_id IN ({placeholders})", ids
 
 
-def _summarize_task_status_rows(rows: list[dict]) -> tuple[int, int, int, int]:
-    """汇总定时任务状态及已读数量."""
+def _summarize_task_status_rows(
+    rows: list[dict],
+) -> tuple[int, int, int, int, int]:
+    """汇总定时任务状态及已读数量.
+
+    返回: (success, running, failed, cancelled, read_count)
+    """
     success = 0
+    running = 0
     failed = 0
     cancelled = 0
     read_count = 0
 
     for row in rows:
         status = row["status"]
+        async_status = row.get("async_status")
         count = row["count"]
 
+        # 综合状态判断
         if status == "success":
-            success += count
+            if async_status == "success":
+                success += count
+            elif async_status is None or async_status == "":
+                running += count
+            elif async_status == "error":
+                failed += count
+            else:
+                # 其他 async_status 值视为运行中
+                running += count
         elif status in ("error", "timeout"):
             failed += count
         elif status in ("cancelled", "skipped"):
@@ -200,7 +216,7 @@ def _summarize_task_status_rows(rows: list[dict]) -> tuple[int, int, int, int]:
         if row["is_read"]:
             read_count += count
 
-    return success, failed, cancelled, read_count
+    return success, running, failed, cancelled, read_count
 
 
 class TracingQueryService:  # pylint: disable=too-many-public-methods
@@ -449,10 +465,9 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         """
         skills_query = f"""
             SELECT CASE WHEN bbk_id = 'V00' THEN '100' ELSE bbk_id END AS bbk_id,
-                   COUNT(*) AS value
+                   COUNT(DISTINCT trace_id) AS value
             FROM swe_tracing_spans
             WHERE {span_where}
-              AND event_type = 'skill_invocation'
               AND skill_name IS NOT NULL
             GROUP BY CASE WHEN bbk_id = 'V00' THEN '100' ELSE bbk_id END
             ORDER BY value DESC
@@ -666,29 +681,28 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             is_prev: bool = False,
         ) -> int:
             # 技能调用量单独取 span 表口径，避免把普通 trace 误计为技能调用。
+            # 使用 DISTINCT trace_id 去重，与排行榜口径一致。
             time_compare = "<" if is_prev else "<="
             if source_id == "all":
                 exclude_placeholders = ", ".join(
                     ["%s"] * len(EXCLUDED_SOURCE_IDS),
                 )
                 query = f"""
-                    SELECT COUNT(*) as total
+                    SELECT COUNT(DISTINCT trace_id) as total
                     FROM swe_tracing_spans
                     WHERE start_time >= %s AND start_time {time_compare} %s
                       AND source_id NOT IN ({exclude_placeholders})
                       AND user_id != 'default'
-                      AND event_type = 'skill_invocation'
                       AND skill_name IS NOT NULL{bbk_filter_sql}
                 """
                 params = (s, e, *EXCLUDED_SOURCE_IDS, *bbk_filter_params)
                 row = await self._db.fetch_one(query, params)
             else:
                 query = f"""
-                    SELECT COUNT(*) as total
+                    SELECT COUNT(DISTINCT trace_id) as total
                     FROM swe_tracing_spans
                     WHERE source_id = %s AND start_time >= %s AND start_time {time_compare} %s
                       AND user_id != 'default'
-                      AND event_type = 'skill_invocation'
                       AND skill_name IS NOT NULL{bbk_filter_sql}
                 """
                 params = (source_id, s, e, *bbk_filter_params)
@@ -1287,7 +1301,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                        COALESCE(MAX(ce.cron_success), 0) as cron_success,
                        (SELECT COUNT(*) FROM swe_tracing_spans s
                         WHERE s.trace_id IN (SELECT trace_id FROM swe_tracing_traces WHERE user_id = t.user_id)
-                        AND s.event_type = 'skill_invocation') as total_skills,
+                        AND s.skill_name IS NOT NULL) as total_skills,
                        MAX(t.user_name) as user_name,
                        MAX(t.bbk_id) as bbk_id,
                        COALESCE(MAX(ce.cron_reads), 0) as cron_reads
@@ -1321,7 +1335,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                        (SELECT COUNT(*) FROM swe_tracing_spans s
                         WHERE s.source_id = %s
                         AND s.trace_id IN (SELECT trace_id FROM swe_tracing_traces WHERE user_id = t.user_id AND source_id = %s)
-                        AND s.event_type = 'skill_invocation') as total_skills,
+                        AND s.skill_name IS NOT NULL) as total_skills,
                        MAX(t.user_name) as user_name,
                        MAX(t.bbk_id) as bbk_id,
                        COALESCE(MAX(ce.cron_reads), 0) as cron_reads
@@ -1882,12 +1896,12 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             exclude_placeholders = ", ".join(["%s"] * len(EXCLUDED_SOURCE_IDS))
             query = f"""
                 SELECT skill_name, MAX(skill_description) as skill_description,
-                       COUNT(*) as count,
+                       COUNT(DISTINCT trace_id) as count,
                        AVG(duration_ms) as avg_duration
                 FROM swe_tracing_spans
                 WHERE start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
                   AND skill_name IS NOT NULL
+                  AND bbk_id IS NOT NULL AND bbk_id != ''
                   AND source_id NOT IN ({exclude_placeholders})
                   AND user_id != 'default'{bbk_filter_sql}
                 GROUP BY skill_name
@@ -1904,12 +1918,12 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         else:
             query = f"""
                 SELECT skill_name, MAX(skill_description) as skill_description,
-                       COUNT(*) as count,
+                       COUNT(DISTINCT trace_id) as count,
                        AVG(duration_ms) as avg_duration
                 FROM swe_tracing_spans
                 WHERE source_id = %s AND start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
                   AND skill_name IS NOT NULL
+                  AND bbk_id IS NOT NULL AND bbk_id != ''
                   AND user_id != 'default'{bbk_filter_sql}
                 GROUP BY skill_name
                 ORDER BY count DESC
@@ -1934,18 +1948,22 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         end_date: datetime,
         bbk_ids: Optional[str] = None,
     ) -> int:
-        """获取技能调用总次数（无 LIMIT）."""
+        """获取技能调用总次数（按技能分组后累加，和排行榜口径一致）."""
         bbk_filter_sql, bbk_filter_params = build_bbk_in_filter(bbk_ids)
         if source_id == "all":
             exclude_placeholders = ", ".join(["%s"] * len(EXCLUDED_SOURCE_IDS))
             query = f"""
-                SELECT COUNT(*) as total
-                FROM swe_tracing_spans
-                WHERE start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
-                  AND skill_name IS NOT NULL
-                  AND source_id NOT IN ({exclude_placeholders})
-                  AND user_id != 'default'{bbk_filter_sql}
+                SELECT COALESCE(SUM(skill_count), 0) as total
+                FROM (
+                    SELECT skill_name, COUNT(DISTINCT trace_id) as skill_count
+                    FROM swe_tracing_spans
+                    WHERE start_time >= %s AND start_time <= %s
+                      AND skill_name IS NOT NULL
+                      AND bbk_id IS NOT NULL AND bbk_id != ''
+                      AND source_id NOT IN ({exclude_placeholders})
+                      AND user_id != 'default'{bbk_filter_sql}
+                    GROUP BY skill_name
+                ) skill_totals
             """
             params = (
                 start_date,
@@ -1956,12 +1974,16 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             row = await self._db.fetch_one(query, params)
         else:
             query = f"""
-                SELECT COUNT(*) as total
-                FROM swe_tracing_spans
-                WHERE source_id = %s AND start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
-                  AND skill_name IS NOT NULL
-                  AND user_id != 'default'{bbk_filter_sql}
+                SELECT COALESCE(SUM(skill_count), 0) as total
+                FROM (
+                    SELECT skill_name, COUNT(DISTINCT trace_id) as skill_count
+                    FROM swe_tracing_spans
+                    WHERE source_id = %s AND start_time >= %s AND start_time <= %s
+                      AND skill_name IS NOT NULL
+                      AND bbk_id IS NOT NULL AND bbk_id != ''
+                      AND user_id != 'default'{bbk_filter_sql}
+                    GROUP BY skill_name
+                ) skill_totals
             """
             params = (source_id, start_date, end_date, *bbk_filter_params)
             row = await self._db.fetch_one(query, params)
@@ -2153,6 +2175,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             base_where = f"""
                 start_time >= %s AND start_time <= %s
                 AND skill_name IS NOT NULL
+                AND bbk_id IS NOT NULL AND bbk_id != ''
                 AND source_id NOT IN ({exclude_placeholders})
                 AND user_id != 'default'{bbk_filter_sql}
             """
@@ -2166,6 +2189,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             base_where = f"""
                 source_id = %s AND start_time >= %s AND start_time <= %s
                 AND skill_name IS NOT NULL
+                AND bbk_id IS NOT NULL AND bbk_id != ''
                 AND user_id != 'default'{bbk_filter_sql}
             """
             count_params = [
@@ -2188,7 +2212,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         offset = (page - 1) * page_size
         data_query = f"""
             SELECT skill_name, MAX(skill_description) as skill_description,
-                   COUNT(*) as count,
+                   COUNT(DISTINCT trace_id) as count,
                    AVG(duration_ms) as avg_duration
             FROM swe_tracing_spans
             WHERE {base_where}
@@ -2287,7 +2311,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
 
         if source_id == "all":
             query = f"""
-                SELECT e.status, e.is_read, COUNT(*) AS count
+                SELECT e.status, e.async_status, e.is_read, COUNT(*) AS count
                 FROM swe_cron_executions e
                 INNER JOIN swe_cron_jobs j ON e.job_id = j.id
                 WHERE e.actual_time >= %s AND e.actual_time < %s
@@ -2296,7 +2320,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                   AND j.source_id NOT IN ({exclude_placeholders})
                   AND j.tenant_id != 'default'
                   {bbk_filter_sql}
-                GROUP BY e.status, e.is_read
+                GROUP BY e.status, e.async_status, e.is_read
             """
             params = (
                 start_date,
@@ -2306,7 +2330,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             )
         else:
             query = f"""
-                SELECT e.status, e.is_read, COUNT(*) AS count
+                SELECT e.status, e.async_status, e.is_read, COUNT(*) AS count
                 FROM swe_cron_executions e
                 INNER JOIN swe_cron_jobs j ON e.job_id = j.id
                 WHERE e.actual_time >= %s AND e.actual_time < %s
@@ -2315,16 +2339,18 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                   AND j.tenant_id != 'default'
                   AND j.source_id = %s
                   {bbk_filter_sql}
-                GROUP BY e.status, e.is_read
+                GROUP BY e.status, e.async_status, e.is_read
             """
             params = (start_date, end_date, source_id, *bbk_filter_params)
 
         rows = await self._db.fetch_all(query, params)
 
-        success, failed, cancelled, read_count = _summarize_task_status_rows(
-            rows,
+        success, running, failed, cancelled, read_count = (
+            _summarize_task_status_rows(
+                rows,
+            )
         )
-        total_tasks = success + failed + cancelled
+        total_tasks = success + running + failed + cancelled
 
         # 查询本时间段内新增的定时任务数（按 created_at 过滤）
         if source_id == "all":
@@ -2371,6 +2397,7 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         return TaskStatusSummary(
             total_tasks=total_tasks,
             success=success,
+            running=running,
             failed=failed,
             cancelled=cancelled,
             read_count=read_count,
@@ -2853,7 +2880,6 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             exclude_placeholders = ", ".join(["%s"] * len(EXCLUDED_SOURCE_IDS))
             base_where = f"""
                 s.start_time >= %s AND s.start_time <= %s
-                AND s.event_type = 'skill_invocation'
                 AND s.skill_name = %s
                 AND s.source_id NOT IN ({exclude_placeholders})
                 AND s.user_id != 'default'
@@ -2867,7 +2893,6 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         else:
             base_where = """
                 s.source_id = %s AND s.start_time >= %s AND s.start_time <= %s
-                AND s.event_type = 'skill_invocation'
                 AND s.skill_name = %s
                 AND s.user_id != 'default'
             """
@@ -3278,11 +3303,10 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         if source_id == "all":
             skill_query = f"""
                 SELECT skill_name, MAX(skill_description) as skill_description,
-                       COUNT(*) as count,
+                       COUNT(DISTINCT trace_id) as count,
                        AVG(duration_ms) as avg_duration
                 FROM swe_tracing_spans
                 WHERE user_id = %s AND start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
                   AND skill_name IS NOT NULL{bbk_filter_sql}
                 GROUP BY skill_name
                 ORDER BY count DESC
@@ -3294,11 +3318,10 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         else:
             skill_query = f"""
                 SELECT skill_name, MAX(skill_description) as skill_description,
-                       COUNT(*) as count,
+                       COUNT(DISTINCT trace_id) as count,
                        AVG(duration_ms) as avg_duration
                 FROM swe_tracing_spans
                 WHERE source_id = %s AND user_id = %s AND start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
                   AND skill_name IS NOT NULL{bbk_filter_sql}
                 GROUP BY skill_name
                 ORDER BY count DESC
@@ -3387,19 +3410,68 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
         mcp_server: Optional[str] = None,
     ) -> tuple[list[str], list[Any]]:
         """构建 get_sessions 的 WHERE 条件."""
+        # 初始化基础条件
+        where_clauses, params = self._init_source_filter(source_id)
+
+        # 添加基础过滤条件
+        self._add_basic_filters(
+            where_clauses,
+            params,
+            user_id,
+            session_id,
+            bbk_ids,
+            start_date,
+            end_date,
+        )
+
+        # 添加资源类型过滤
+        resource_date_sql, resource_date_params = (
+            self._build_resource_date_sql(
+                start_date,
+                end_date,
+            )
+        )
+        self._add_resource_filter(
+            where_clauses,
+            params,
+            resource_type,
+            resource_name,
+            mcp_server,
+            resource_date_sql,
+            resource_date_params,
+        )
+
+        # 添加错误状态过滤
+        self._add_error_filter(where_clauses, has_error)
+
+        return where_clauses, params
+
+    def _init_source_filter(
+        self,
+        source_id: str,
+    ) -> tuple[list[str], list[Any]]:
+        """初始化 source_id 过滤条件."""
         exclude_placeholders = ", ".join(["%s"] * len(EXCLUDED_SOURCE_IDS))
         if source_id == "all":
-            where_clauses: list[str] = [
-                f"t.source_id NOT IN ({exclude_placeholders})",
-            ]
-            params: list[Any] = list(EXCLUDED_SOURCE_IDS)
+            where_clauses = [f"t.source_id NOT IN ({exclude_placeholders})"]
+            params = list(EXCLUDED_SOURCE_IDS)
         else:
             where_clauses = ["t.source_id = %s"]
             params = [source_id]
+        return where_clauses, params
 
-        if user_id:
-            where_clauses.append("t.user_id = %s")
-            params.append(user_id)
+    def _add_basic_filters(
+        self,
+        where_clauses: list[str],
+        params: list[Any],
+        user_id: Optional[str],
+        session_id: Optional[str],
+        bbk_ids: Optional[str],
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+    ) -> None:
+        """添加基础参数过滤条件."""
+        self._append_filter(where_clauses, params, "t.user_id = %s", user_id)
         if session_id:
             where_clauses.append("t.session_id LIKE %s")
             params.append(f"%{session_id}%")
@@ -3409,13 +3481,37 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                 f"t.bbk_id IN ({', '.join(['%s'] * len(bbk_params))})",
             )
             params.extend(bbk_params)
-        if start_date:
-            where_clauses.append("t.start_time >= %s")
-            params.append(start_date)
-        if end_date:
-            where_clauses.append("t.start_time <= %s")
-            params.append(end_date)
+        self._append_filter(
+            where_clauses,
+            params,
+            "t.start_time >= %s",
+            start_date,
+        )
+        self._append_filter(
+            where_clauses,
+            params,
+            "t.start_time <= %s",
+            end_date,
+        )
 
+    def _append_filter(
+        self,
+        where_clauses: list[str],
+        params: list[Any],
+        clause: str,
+        value: Optional[Any],
+    ) -> None:
+        """添加单个过滤条件."""
+        if value:
+            where_clauses.append(clause)
+            params.append(value)
+
+    def _build_resource_date_sql(
+        self,
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+    ) -> tuple[str, list[Any]]:
+        """构建资源子查询的日期条件."""
         resource_date_clauses: list[str] = []
         resource_date_params: list[Any] = []
         if start_date:
@@ -3429,42 +3525,108 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
             if resource_date_clauses
             else ""
         )
+        return resource_date_sql, resource_date_params
 
-        if resource_type == "model" and resource_name:
-            where_clauses.append(
-                "EXISTS (SELECT 1 FROM swe_tracing_traces resource "
-                "WHERE resource.source_id = t.source_id "
-                "AND resource.session_id = t.session_id "
-                "AND resource.model_name = %s"
-                f"{resource_date_sql})",
+    def _add_resource_filter(
+        self,
+        where_clauses: list[str],
+        params: list[Any],
+        resource_type: Optional[str],
+        resource_name: Optional[str],
+        mcp_server: Optional[str],
+        resource_date_sql: str,
+        resource_date_params: list[Any],
+    ) -> None:
+        """添加资源类型过滤条件."""
+        if not resource_type or not resource_name:
+            return
+        handlers = {
+            "model": self._add_model_filter,
+            "skill": self._add_skill_filter,
+            "mcp_tool": self._add_mcp_tool_filter,
+        }
+        handler = handlers.get(resource_type)
+        if handler:
+            handler(
+                where_clauses,
+                params,
+                resource_name,
+                mcp_server,
+                resource_date_sql,
+                resource_date_params,
             )
-            params.append(resource_name)
-            params.extend(resource_date_params)
-        elif resource_type == "skill" and resource_name:
-            where_clauses.append(
-                "EXISTS (SELECT 1 FROM swe_tracing_spans resource "
-                "WHERE resource.source_id = t.source_id "
-                "AND resource.session_id = t.session_id "
-                "AND resource.event_type = 'skill_invocation' "
-                "AND resource.skill_name = %s"
-                f"{resource_date_sql})",
-            )
-            params.append(resource_name)
-            params.extend(resource_date_params)
-        elif resource_type == "mcp_tool" and resource_name and mcp_server:
-            where_clauses.append(
-                "EXISTS (SELECT 1 FROM swe_tracing_spans resource "
-                "WHERE resource.source_id = t.source_id "
-                "AND resource.session_id = t.session_id "
-                "AND resource.event_type = 'tool_call_end' "
-                "AND resource.tool_name = %s "
-                "AND resource.mcp_server = %s"
-                f"{resource_date_sql})",
-            )
-            params.extend([resource_name, mcp_server])
-            params.extend(resource_date_params)
 
-        # 报错会话筛选
+    def _add_model_filter(
+        self,
+        where_clauses: list[str],
+        params: list[Any],
+        resource_name: str,
+        mcp_server: Optional[str],
+        resource_date_sql: str,
+        resource_date_params: list[Any],
+    ) -> None:
+        """添加模型资源过滤."""
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM swe_tracing_traces resource "
+            "WHERE resource.source_id = t.source_id "
+            "AND resource.session_id = t.session_id "
+            "AND resource.model_name = %s"
+            f"{resource_date_sql})",
+        )
+        params.append(resource_name)
+        params.extend(resource_date_params)
+
+    def _add_skill_filter(
+        self,
+        where_clauses: list[str],
+        params: list[Any],
+        resource_name: str,
+        mcp_server: Optional[str],
+        resource_date_sql: str,
+        resource_date_params: list[Any],
+    ) -> None:
+        """添加技能资源过滤."""
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM swe_tracing_spans resource "
+            "WHERE resource.source_id = t.source_id "
+            "AND resource.session_id = t.session_id "
+            "AND resource.event_type = 'skill_invocation' "
+            "AND resource.skill_name = %s"
+            f"{resource_date_sql})",
+        )
+        params.append(resource_name)
+        params.extend(resource_date_params)
+
+    def _add_mcp_tool_filter(
+        self,
+        where_clauses: list[str],
+        params: list[Any],
+        resource_name: str,
+        mcp_server: Optional[str],
+        resource_date_sql: str,
+        resource_date_params: list[Any],
+    ) -> None:
+        """添加 MCP 工具资源过滤."""
+        if not mcp_server:
+            return
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM swe_tracing_spans resource "
+            "WHERE resource.source_id = t.source_id "
+            "AND resource.session_id = t.session_id "
+            "AND resource.event_type = 'tool_call_end' "
+            "AND resource.tool_name = %s "
+            "AND resource.mcp_server = %s"
+            f"{resource_date_sql})",
+        )
+        params.extend([resource_name, mcp_server])
+        params.extend(resource_date_params)
+
+    def _add_error_filter(
+        self,
+        where_clauses: list[str],
+        has_error: Optional[bool],
+    ) -> None:
+        """添加错误状态过滤条件."""
         if has_error is True:
             where_clauses.append(
                 "EXISTS (SELECT 1 FROM swe_tracing_traces error_trace "
@@ -3480,15 +3642,13 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                 "AND error_trace.status = 'error')",
             )
 
-        return where_clauses, params
-
     def _build_skill_date_conditions(
         self,
         start_date: Optional[datetime],
         end_date: Optional[datetime],
     ) -> tuple[str, list[Any]]:
         """构建技能统计子查询的日期筛选条件."""
-        skill_date_conditions = "s.event_type = 'skill_invocation'"
+        skill_date_conditions = "s.skill_name IS NOT NULL"
         skill_params: list[Any] = []
         if start_date:
             skill_date_conditions += " AND s.start_time >= %s"
@@ -3915,7 +4075,6 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                 FROM swe_tracing_spans
                 WHERE source_id NOT IN ({exclude_placeholders})
                       AND session_id = %s AND start_time >= %s AND start_time <= %s
-                  AND event_type = 'skill_invocation'
                   AND skill_name IS NOT NULL
                   {bbk_filter_sql}
                 GROUP BY skill_name
@@ -3938,7 +4097,6 @@ class TracingQueryService:  # pylint: disable=too-many-public-methods
                    AVG(duration_ms) as avg_duration
             FROM swe_tracing_spans
             WHERE source_id = %s AND session_id = %s AND start_time >= %s AND start_time <= %s
-              AND event_type = 'skill_invocation'
               AND skill_name IS NOT NULL
               {bbk_filter_sql}
             GROUP BY skill_name

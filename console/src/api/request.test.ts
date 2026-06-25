@@ -129,4 +129,22 @@ describe("request", () => {
     const retryHeaders = retryInit.headers as Headers;
     expect(retryHeaders.has("Content-Type")).toBe(false);
   });
+
+  it("sets JSON Content-Type for DELETE requests with a body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ ok: true }, { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { request } = await import("./request");
+
+    await request("/api/archive/items", {
+      method: "DELETE",
+      body: JSON.stringify({ archive_item_ids: ["archive-1"] }),
+    });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Headers;
+    expect(headers.get("Content-Type")).toBe("application/json");
+  });
 });

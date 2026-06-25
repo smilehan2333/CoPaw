@@ -1,11 +1,18 @@
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CronJobSpecOutput } from "@/api/types";
 import { BroadcastChildrenModal } from "./BroadcastChildrenModal";
 
 const mocks = vi.hoisted(() => ({
   listCronBroadcastChildren: vi.fn(),
+  refreshCronBroadcastChildren: vi.fn(),
   deleteCronBroadcastChildren: vi.fn(),
   runCronBroadcastChildren: vi.fn(),
 }));
@@ -39,6 +46,20 @@ describe("BroadcastChildrenModal", () => {
     vi.clearAllMocks();
     mocks.listCronBroadcastChildren.mockResolvedValue({
       items: [],
+      status: "idle",
+      tenant_count: 0,
+      failed_tenants: 0,
+      failure_summary: null,
+      updated_at: null,
+    });
+    mocks.refreshCronBroadcastChildren.mockResolvedValue({
+      items: [],
+      status: "running",
+      tenant_count: 0,
+      failed_tenants: 0,
+      failure_summary: null,
+      updated_at: null,
+      reused: false,
     });
   });
 
@@ -63,7 +84,12 @@ describe("BroadcastChildrenModal", () => {
   });
 
   it("shows duplicate tenant names as separate UID rows", async () => {
-    mocks.listCronBroadcastChildren.mockResolvedValue({
+    const duplicateSnapshot = {
+      status: "completed",
+      tenant_count: 2,
+      failed_tenants: 0,
+      failure_summary: null,
+      updated_at: "2026-06-24T08:00:00Z",
       items: [
         {
           tenant_id: "80112233",
@@ -94,6 +120,12 @@ describe("BroadcastChildrenModal", () => {
           last_error: null,
         },
       ],
+    };
+    mocks.listCronBroadcastChildren.mockResolvedValue(duplicateSnapshot);
+    mocks.refreshCronBroadcastChildren.mockResolvedValue({
+      ...duplicateSnapshot,
+      status: "running",
+      reused: false,
     });
 
     render(
@@ -106,5 +138,58 @@ describe("BroadcastChildrenModal", () => {
     expect(screen.getByText("周欣 (2 个 UID)")).toBeInTheDocument();
     expect(screen.getByText("80112233")).toBeInTheDocument();
     expect(screen.getByText("80245604")).toBeInTheDocument();
+  });
+
+  it("starts lookup on open and refresh button only reads snapshot", async () => {
+    mocks.listCronBroadcastChildren
+      .mockResolvedValueOnce({
+        items: [],
+        status: "idle",
+        tenant_count: 0,
+        failed_tenants: 0,
+        failure_summary: null,
+        updated_at: null,
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        status: "running",
+        tenant_count: 2,
+        failed_tenants: 0,
+        failure_summary: null,
+        updated_at: null,
+      });
+    mocks.refreshCronBroadcastChildren.mockResolvedValue({
+      items: [],
+      status: "running",
+      tenant_count: 2,
+      failed_tenants: 0,
+      failure_summary: null,
+      updated_at: null,
+      reused: false,
+    });
+
+    render(
+      <BroadcastChildrenModal open job={buildJob()} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(mocks.listCronBroadcastChildren).toHaveBeenCalledWith(
+        "job-source",
+      );
+    });
+    await waitFor(() => {
+      expect(mocks.refreshCronBroadcastChildren).toHaveBeenCalledWith(
+        "job-source",
+      );
+    });
+    expect(await screen.findByText("状态：生成中")).toBeInTheDocument();
+    expect(screen.getByText("数据时间：正在生成中")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+
+    await waitFor(() => {
+      expect(mocks.listCronBroadcastChildren).toHaveBeenCalledTimes(2);
+    });
+    expect(mocks.refreshCronBroadcastChildren).toHaveBeenCalledTimes(1);
   });
 });

@@ -19,6 +19,7 @@ from swe.app.crons.models import (
     ScheduleSpec,
 )
 from swe.providers.models import ModelSlotConfig
+from swe.tracing.models import TraceStatus
 
 
 class _Repo:
@@ -168,7 +169,9 @@ def test_automatic_execution_applies_notification_delay():
 
     record, actual_time = asyncio.run(_run())
 
-    assert record["notification_due_at"] == actual_time + timedelta(minutes=120)
+    assert record["notification_due_at"] == actual_time + timedelta(
+        minutes=120,
+    )
 
 
 def test_manual_execution_does_not_apply_notification_delay():
@@ -622,6 +625,81 @@ def test_failed_execution_preserves_trace_id(monkeypatch):
     assert monitor.records[-1]["trace_id"] == fake_trace_id
 
 
+def test_auth_failure_preserves_trace_id_and_raises(monkeypatch):
+    fake_trace_id = "test-trace-id-for-auth-failure"
+    end_trace_calls: list[tuple[object, ...]] = []
+
+    async def fake_start_trace(**_kwargs):
+        return fake_trace_id
+
+    async def fake_end_trace(*args, **_kwargs):
+        end_trace_calls.append(args)
+
+    def fake_resolve_auth_token_for_execution(**_kwargs):
+        raise ValueError("cron auth user_info is expired")
+
+    monkeypatch.setattr(
+        "swe.app.crons.executor.has_trace_manager",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "swe.app.crons.executor.get_trace_manager",
+        lambda: SimpleNamespace(
+            enabled=True,
+            start_trace=fake_start_trace,
+            end_trace=fake_end_trace,
+        ),
+    )
+    monkeypatch.setattr(
+        "swe.app.crons.executor.resolve_auth_token_for_execution",
+        fake_resolve_auth_token_for_execution,
+    )
+
+    async def _run():
+        job = _build_agent_job()
+        channel_manager = _ChannelManager()
+        monitor = _MonitorSyncClient()
+        manager = CronManager(
+            repo=_Repo(job),
+            runner=_Runner(),
+            channel_manager=channel_manager,
+        )
+        manager._monitor_sync_client = (
+            monitor  # pylint: disable=protected-access
+        )
+
+        captured_error = None
+        try:
+            await manager._execute_once(  # pylint: disable=protected-access
+                job,
+                is_manual=False,
+            )
+        except RuntimeError as exc:
+            captured_error = exc
+
+        return captured_error, monitor
+
+    captured_error, monitor = asyncio.run(_run())
+
+    assert captured_error is not None
+    assert str(captured_error) == (
+        "cron auth user_info is expired; "
+        "please refresh cron auth configuration"
+    )
+    assert monitor.records[-1]["status"] == "error"
+    assert monitor.records[-1]["trace_id"] == fake_trace_id
+    assert end_trace_calls == [
+        (
+            fake_trace_id,
+            TraceStatus.ERROR,
+            (
+                "cron auth user_info is expired; "
+                "please refresh cron auth configuration"
+            ),
+        ),
+    ]
+
+
 def test_manual_broadcast_execution_does_not_delay_notification():
     """手动执行分发任务时，不应沿用原计划的通知延迟。"""
 
@@ -729,5 +807,7 @@ def test_automatic_broadcast_execution_stacks_notification_delay():
 
     record, actual_time = asyncio.run(_run())
 
-    assert record["notification_due_at"] == actual_time + timedelta(minutes=140)
+    assert record["notification_due_at"] == actual_time + timedelta(
+        minutes=140,
+    )
     assert record["notification_timezone"] == "Asia/Shanghai"

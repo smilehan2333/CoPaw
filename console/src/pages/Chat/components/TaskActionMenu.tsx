@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Dropdown, type MenuProps } from "antd";
 import {
   CircleStop,
+  Pencil,
   Play,
   MoreVertical,
   RotateCcw,
@@ -19,6 +20,7 @@ export interface TaskActionMenuProps {
   onTaskRun?: (task: CronJobSpecOutput) => void;
   onTaskResume?: (task: CronJobSpecOutput) => void;
   onTaskDelete?: (task: CronJobSpecOutput) => void;
+  onTaskEdit?: (task: CronJobSpecOutput) => void;
 }
 
 function TaskActionLabel({
@@ -57,10 +59,28 @@ export default function TaskActionMenu({
   onTaskRun,
   onTaskResume,
   onTaskDelete,
+  onTaskEdit,
 }: TaskActionMenuProps) {
   const [open, setOpen] = useState(false);
   const items = useMemo<MenuProps["items"]>(() => {
     const nextItems: NonNullable<MenuProps["items"]> = [];
+
+    if (onTaskEdit && sidebarMeta.canEdit) {
+      nextItems.push({
+        key: "edit",
+        label: (
+          <TaskActionLabel
+            icon={<Pencil size={15} />}
+            title="编辑"
+            description="调整任务配置"
+          />
+        ),
+        onClick: ({ domEvent }) => {
+          domEvent.stopPropagation();
+          onTaskEdit(task);
+        },
+      });
+    }
 
     if (sidebarMeta.canPause) {
       nextItems.push({
@@ -138,9 +158,11 @@ export default function TaskActionMenu({
     return nextItems;
   }, [
     onTaskDelete,
+    onTaskEdit,
     onTaskPause,
     onTaskResume,
     onTaskRun,
+    sidebarMeta.canEdit,
     sidebarMeta.canDelete,
     sidebarMeta.canPause,
     sidebarMeta.canResume,

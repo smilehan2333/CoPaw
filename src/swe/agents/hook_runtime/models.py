@@ -96,6 +96,8 @@ class HookContext(BaseModel):
     tool_response: Any = None
     assistant_response: str | None = None
     error: str | None = None
+    conversation_snapshot: list[dict[str, Any]] | None = None
+    conversation_snapshot_meta: dict[str, Any] | None = None
 
     def to_handler_payload(self) -> dict[str, Any]:
         return self.model_dump(mode="json", exclude_none=True)
@@ -184,6 +186,16 @@ class BaseHookHandlerConfig(BaseModel):
     timeout: float = Field(default=10.0, gt=0)
     status_message: str = Field(default="", alias="statusMessage")
     once: bool = False
+    include_conversation_snapshot: bool = Field(
+        default=False,
+        alias="includeConversationSnapshot",
+    )
+    conversation_snapshot_limit: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        alias="conversationSnapshotLimit",
+    )
     fail_policy: FailPolicy = Field(
         default=FailPolicy.ALLOW,
         alias="failPolicy",

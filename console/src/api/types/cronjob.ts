@@ -61,6 +61,7 @@ export interface CronJobSpecInput {
   schedule: CronJobSchedule;
   task_type?: "text" | "agent";
   text?: string;
+  skill_ids?: string;
   model_slot?: ModelSlotConfig | null;
   request?: CronJobRequest;
   dispatch: CronJobDispatch;
@@ -121,8 +122,24 @@ export interface CronBroadcastChildItem {
   last_error?: string | null;
 }
 
+export type CronBroadcastChildrenLookupStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed";
+
 export interface CronBroadcastChildrenResponse {
   items: CronBroadcastChildItem[];
+  status: CronBroadcastChildrenLookupStatus;
+  tenant_count: number;
+  failed_tenants: number;
+  failure_summary?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CronBroadcastChildrenRefreshResponse
+  extends CronBroadcastChildrenResponse {
+  reused: boolean;
 }
 
 export interface CronBroadcastChildRef {

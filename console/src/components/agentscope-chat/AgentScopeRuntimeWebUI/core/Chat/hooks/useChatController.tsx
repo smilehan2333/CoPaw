@@ -142,7 +142,9 @@ export default function useChatController() {
 
       const messages = messageHandler.getMessages();
       if (activeSessionId) {
-        await sessionHandler.updateSessionName(data.query, messages);
+        await sessionHandler.updateSessionName(data.query, messages, {
+          refreshList: false,
+        });
       }
 
       messageHandler.createRequestMessage(data);
@@ -150,6 +152,7 @@ export default function useChatController() {
         activeSessionId,
         messageHandler.getMessages(),
         true,
+        { refreshList: false },
       );
       setLoading(true);
       await sleep(100);
@@ -164,6 +167,7 @@ export default function useChatController() {
         activeSessionId,
         messageHandler.getMessages(),
         true,
+        { refreshList: false },
       );
 
       await request(historyMessages, data.biz_params, owner);
@@ -231,7 +235,9 @@ export default function useChatController() {
         await stopActiveRunInBackground();
       },
       submit: async (data) => {
-        if (followUpSessionIdRef.current !== sessionHandler.getCurrentSessionId()) {
+        if (
+          followUpSessionIdRef.current !== sessionHandler.getCurrentSessionId()
+        ) {
           return;
         }
 

@@ -22,6 +22,7 @@ from ..tenant_context import bind_tenant_context
 from ..console_push_store import append as push_store_append
 from ...config.context import (
     canonicalize_scope_id,
+    is_valid_identity_value,
     resolve_runtime_identity,
     resolve_scope_id,
 )
@@ -34,6 +35,7 @@ from ..source_system_config.runtime import (
     resolve_cron_unread_auto_pause_config,
     set_current_source_system_config,
 )
+from ..continuous_governance.models import GOVERNANCE_ID_MAX_LENGTH
 from .auth_state import prefetch_auth_token
 from .cron_utils import compute_next_run_at, compute_next_run_times
 from .executor import CronExecutor
@@ -319,7 +321,9 @@ def _prune_task_session_state(
     parts.memory_state["content"] = run_result.retained_content
     parts.next_state["task_runs"] = run_result.adjusted_runs
     parts.next_state[TASK_MESSAGES_STATE_KEY] = message_result.kept_messages
-    changed = run_result.removed_runs > 0 or message_result.removed_messages > 0
+    changed = (
+        run_result.removed_runs > 0 or message_result.removed_messages > 0
+    )
     return _TaskSessionCleanupSnapshot(
         state=parts.next_state,
         changed=changed,
@@ -369,6 +373,7 @@ class CronManager:  # pylint: disable=too-many-public-methods
         tenant_id: Optional[str] = None,
         scheduler_adapter: Optional[SchedulerAdapter] = None,
         source_system_config_service: Any = None,
+        continuous_governance_service: Any = None,
     ):
         self._repo = repo
         self._runner = runner
@@ -378,6 +383,7 @@ class CronManager:  # pylint: disable=too-many-public-methods
         self._tenant_id = tenant_id
         self._timezone = timezone
         self._source_system_config_service = source_system_config_service
+        self._continuous_governance_service = continuous_governance_service
 
         self._executor = CronExecutor(
             runner=runner,
@@ -882,8 +888,10 @@ class CronManager:  # pylint: disable=too-many-public-methods
         if self._source_system_config_service is None or not source_id:
             return resolve_cron_task_session_cleanup_config(None)
         try:
-            source_config = await self._source_system_config_service.resolve_config(
-                source_id,
+            source_config = (
+                await self._source_system_config_service.resolve_config(
+                    source_id,
+                )
             )
         except Exception:
             logger.warning(
@@ -1285,12 +1293,16 @@ class CronManager:  # pylint: disable=too-many-public-methods
         meta = spec.meta or {}
         state = self.get_state(spec.id)
         creator_user_id = meta.get("creator_user_id")
+        visible_in_my_tasks = bool(
+            spec.task_type in {"agent", "text"}
+            and creator_user_id
+            and creator_user_id == user_id,
+        )
+        pause_reason = meta.get("pause_reason")
+        if visible_in_my_tasks and not pause_reason and not spec.enabled:
+            pause_reason = MANUAL_PAUSE_REASON
         return CronTaskView(
-            visible_in_my_tasks=bool(
-                spec.task_type in {"agent", "text"}
-                and creator_user_id
-                and creator_user_id == user_id,
-            ),
+            visible_in_my_tasks=visible_in_my_tasks,
             chat_id=meta.get("task_chat_id"),
             session_id=meta.get("task_session_id"),
             has_scheduled_result=bool(
@@ -1304,8 +1316,8 @@ class CronManager:  # pylint: disable=too-many-public-methods
             ),
             last_scheduled_run_at=meta.get("task_last_scheduled_run_at"),
             is_running=state.last_status == "running",
-            is_paused=bool(meta.get("pause_reason")),
-            pause_reason=meta.get("pause_reason"),
+            is_paused=bool(pause_reason),
+            pause_reason=pause_reason,
             auto_paused_at=meta.get("auto_paused_at"),
         )
 
@@ -2105,16 +2117,20 @@ class CronManager:  # pylint: disable=too-many-public-methods
             result["sessions_cleaned"] += 1
             result["runs_removed"] += snapshot.removed_runs
             result["messages_removed"] += snapshot.removed_messages
-            async with self._lock:
-                await self._mutate_jobs_file_locked(
-                    lambda jobs_file, job_id=job.id, snap=snapshot: (
-                        self._apply_task_session_cleanup_meta(
-                            jobs_file,
-                            job_id,
-                            snap,
-                        )
-                    ),
+
+            def _apply_cleanup_meta(
+                jobs_file: JobsFile,
+                job_id: str = job.id,
+                snap: _TaskSessionCleanupSnapshot = snapshot,
+            ) -> tuple[bool, None]:
+                return self._apply_task_session_cleanup_meta(
+                    jobs_file,
+                    job_id,
+                    snap,
                 )
+
+            async with self._lock:
+                await self._mutate_jobs_file_locked(_apply_cleanup_meta)
         logger.info("Task session cleanup result: %s", result)
         return result
 
@@ -2633,11 +2649,116 @@ class CronManager:  # pylint: disable=too-many-public-methods
                 source_system_config,
             ),
         ):
+            before_record_ids = self._load_dream_record_ids(workspace_dir)
             await self._runner.memory_manager.dream_memory(
                 tenant_id=runtime_tenant_id,
                 trigger="cron",
             )
+            governance_agent_id = self._continuous_governance_target_agent_id()
+            await self._dual_write_dream_records(
+                workspace_dir=workspace_dir,
+                source_id=source_id,
+                tenant_id=tenant_id,
+                agent_id=governance_agent_id,
+                before_record_ids=before_record_ids,
+            )
+            if workspace_dir is not None:
+                from ..routers.dream_logs import (
+                    dual_write_dream_archive_maintenance_result,
+                    run_dream_archive_maintenance,
+                )
+
+                maintenance = run_dream_archive_maintenance(
+                    workspace_dir,
+                    actor="dream_cron",
+                )
+                if (
+                    maintenance is not None
+                    and self._continuous_governance_service is not None
+                    and source_id
+                    and tenant_id
+                    and governance_agent_id
+                ):
+                    await dual_write_dream_archive_maintenance_result(
+                        service=self._continuous_governance_service,
+                        source_id=source_id,
+                        target_user_id=tenant_id,
+                        target_agent_id=governance_agent_id,
+                        maintenance=maintenance,
+                        actor="dream_cron",
+                        source_name=source_id,
+                    )
         logger.debug("Dream task executed successfully")
+
+    def _load_dream_record_ids(self, workspace_dir: Path | None) -> set[str]:
+        """读取 dream 执行前已有记录 id。"""
+        if workspace_dir is None:
+            return set()
+        data = self._load_dream_logs(workspace_dir)
+        return {
+            str(record.get("id") or "")
+            for record in data.get("records", [])
+            if isinstance(record, dict) and record.get("id")
+        }
+
+    def _continuous_governance_target_agent_id(self) -> str | None:
+        """返回可安全写入持续治理读模型的 agent 标识。"""
+        agent_id = self._agent_id or "default"
+        if len(
+            agent_id,
+        ) > GOVERNANCE_ID_MAX_LENGTH or not is_valid_identity_value(agent_id):
+            logger.warning(
+                "Skip continuous governance dual-write for invalid agent id",
+            )
+            return None
+        return agent_id
+
+    async def _dual_write_dream_records(
+        self,
+        *,
+        workspace_dir: Path | None,
+        source_id: str | None,
+        tenant_id: str | None,
+        agent_id: str | None,
+        before_record_ids: set[str],
+    ) -> None:
+        """cron dream 完成后把新增治理记录写入数据库读模型。"""
+        service = self._continuous_governance_service
+        if (
+            workspace_dir is None
+            or not source_id
+            or not tenant_id
+            or not agent_id
+        ):
+            return
+        if service is None:
+            return
+        data = self._load_dream_logs(workspace_dir)
+        for record in data.get("records", []):
+            if not isinstance(record, dict):
+                continue
+            record_id = str(record.get("id") or "")
+            if not record_id or record_id in before_record_ids:
+                continue
+            await service.upsert_workspace_governance_record_with_health(
+                source_id=source_id,
+                target_user_id=tenant_id,
+                target_user_name=None,
+                bbk_id=None,
+                target_agent_id=agent_id,
+                record=record,
+            )
+
+    def _load_dream_logs(self, workspace_dir: Path) -> dict[str, Any]:
+        """读取 workspace dream_logs.json。"""
+        path = workspace_dir / "dream_logs.json"
+        if not path.exists():
+            return {"records": []}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"records": []}
+        return data if isinstance(data, dict) else {"records": []}
 
     def _resolve_runtime_context(
         self,

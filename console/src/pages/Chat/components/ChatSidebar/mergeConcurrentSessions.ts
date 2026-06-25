@@ -5,9 +5,12 @@ type SessionWithIdentity = IAgentScopeRuntimeWebUISession & {
   sessionId?: string;
 };
 
-function identityKeys(session: IAgentScopeRuntimeWebUISession): string[] {
-  const extended = session as SessionWithIdentity;
-  return [extended.id, extended.realId, extended.sessionId].filter(
+type SessionIdentity = Partial<SessionWithIdentity> & {
+  id?: string;
+};
+
+function identityKeys(session: SessionIdentity): string[] {
+  return [session.id, session.realId, session.sessionId].filter(
     (value): value is string => Boolean(value),
   );
 }
@@ -20,13 +23,23 @@ function sessionsMatch(
   return identityKeys(left).some((key) => rightKeys.has(key));
 }
 
+function hasExcludedIdentity(
+  session: IAgentScopeRuntimeWebUISession,
+  excludedIdentityKeys: ReadonlySet<string>,
+): boolean {
+  return identityKeys(session).some((key) => excludedIdentityKeys.has(key));
+}
+
 export function mergeConcurrentSessions(
   incoming: IAgentScopeRuntimeWebUISession[],
   current: IAgentScopeRuntimeWebUISession[],
   preserveCurrentDetails: boolean,
+  excludedSessions: SessionIdentity[] = [],
 ): IAgentScopeRuntimeWebUISession[] {
+  const excludedIdentityKeys = new Set(excludedSessions.flatMap(identityKeys));
   const currentOnly = current.filter(
     (currentSession) =>
+      !hasExcludedIdentity(currentSession, excludedIdentityKeys) &&
       !incoming.some((incomingSession) =>
         sessionsMatch(currentSession, incomingSession),
       ),

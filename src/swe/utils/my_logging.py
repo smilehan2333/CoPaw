@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Logging setup for SWE: console output and optional file handler."""
+"""Logging setup for SWE: asynchronous console output."""
 
+import atexit
 import io
 import logging
 import logging.handlers
 import os
 import platform
+import queue
 import sys
-from pathlib import Path
+import threading
+from typing import TextIO
 
-# Rotating file handler limits (idempotent add avoids duplicate handlers)
-_SWE_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
-_SWE_LOG_BACKUP_COUNT = 3
+_ASYNC_LOG_QUEUE_MAXSIZE = 10000
+_HIGH_PRIORITY_WAIT_SECONDS = 0.05
+_SHUTDOWN_TIMEOUT_SECONDS = 2.0
+_QUEUE_POLL_SECONDS = 0.2
 
 
 _LEVEL_MAP = {
@@ -24,6 +28,11 @@ _LEVEL_MAP = {
 
 # Top-level name for this package; only loggers under this name are shown.
 LOG_NAMESPACE = "swe"
+
+_async_lock = threading.RLock()
+_async_dispatcher: "_AsyncLogDispatcher | None" = None
+_async_handler: "_AsyncQueueLogHandler | None" = None
+_atexit_registered = False
 
 
 def _enable_windows_ansi() -> None:
@@ -106,8 +115,192 @@ class SuppressPathAccessLogFilter(logging.Filter):
             return True
 
 
+class _AsyncLogDispatcher:
+    """Dispatch queued log records to output handlers in a background thread."""
+
+    def __init__(
+        self,
+        log_queue: "queue.Queue[logging.LogRecord | None] | None" = None,
+        target_handlers: list[logging.Handler] | None = None,
+        high_priority_wait_seconds: float = _HIGH_PRIORITY_WAIT_SECONDS,
+    ) -> None:
+        self.log_queue = log_queue or queue.Queue(
+            maxsize=_ASYNC_LOG_QUEUE_MAXSIZE,
+        )
+        self.target_handlers = list(target_handlers or [])
+        self.high_priority_wait_seconds = high_priority_wait_seconds
+        self._dropped_low_priority = 0
+        self._drop_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the background dispatcher thread once."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="swe-async-logging",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        """Enqueue a record using severity-aware backpressure rules."""
+        if record.levelno < logging.WARNING:
+            try:
+                self.log_queue.put_nowait(record)
+            except queue.Full:
+                self._increment_dropped_low_priority()
+            return
+
+        try:
+            self.log_queue.put(
+                record,
+                block=True,
+                timeout=self.high_priority_wait_seconds,
+            )
+        except queue.Full:
+            self._direct_emit(record)
+
+    def stop(self, timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> None:
+        """Drain briefly and stop the dispatcher thread."""
+        thread = self._thread
+        if thread is None:
+            self.emit_drop_summary()
+            return
+        try:
+            self.log_queue.put_nowait(None)
+        except queue.Full:
+            self._stop_event.set()
+        thread.join(timeout=timeout)
+        self.emit_drop_summary()
+
+    def emit_drop_summary(self) -> None:
+        """Directly emit a summary for dropped debug/info records."""
+        with self._drop_lock:
+            count = self._dropped_low_priority
+            self._dropped_low_priority = 0
+        if count <= 0:
+            return
+
+        record = logging.LogRecord(
+            name=f"{LOG_NAMESPACE}.logging",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=0,
+            msg=(
+                "dropped %d debug/info log records because async "
+                "logging queue was full"
+            ),
+            args=(count,),
+            exc_info=None,
+        )
+        self._direct_emit(record)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set() or not self.log_queue.empty():
+            try:
+                record = self.log_queue.get(timeout=_QUEUE_POLL_SECONDS)
+            except queue.Empty:
+                self.emit_drop_summary()
+                continue
+            try:
+                if record is None:
+                    break
+                self._direct_emit(record)
+            finally:
+                try:
+                    self.log_queue.task_done()
+                except ValueError:
+                    pass
+                self.emit_drop_summary()
+        self.emit_drop_summary()
+
+    def _increment_dropped_low_priority(self) -> None:
+        with self._drop_lock:
+            self._dropped_low_priority += 1
+
+    def _direct_emit(self, record: logging.LogRecord) -> None:
+        for handler in self.target_handlers:
+            try:
+                handler.handle(record)
+            except Exception:
+                self._minimal_stderr_fallback(record)
+
+    @staticmethod
+    def _minimal_stderr_fallback(record: logging.LogRecord) -> None:
+        try:
+            sys.stderr.write(
+                f"{record.levelname} {record.name}: {record.getMessage()}\n",
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+
+class _AsyncQueueLogHandler(logging.Handler):
+    """Logging handler that delegates records to the async dispatcher."""
+
+    def __init__(self, dispatcher: _AsyncLogDispatcher) -> None:
+        super().__init__(level=logging.NOTSET)
+        self.dispatcher = dispatcher
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.dispatcher.enqueue(record)
+
+
+class _Utf8StderrStream(io.TextIOBase):
+    """UTF-8 text wrapper that never closes the underlying stderr buffer."""
+
+    encoding = "utf-8"
+    errors = "replace"
+
+    def __init__(self, text_stream: TextIO) -> None:
+        self._text_stream = text_stream
+        self._buffer = getattr(text_stream, "buffer", None)
+
+    def write(self, text: str) -> int:
+        if self._buffer is None:
+            return self._text_stream.write(text)
+        data = text.encode(self.encoding, errors=self.errors)
+        self._buffer.write(data)
+        if getattr(self, "line_buffering", False) and "\n" in text:
+            self.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer is not None:
+            self._buffer.flush()
+            return
+        self._text_stream.flush()
+
+    def isatty(self) -> bool:
+        return bool(
+            hasattr(self._text_stream, "isatty")
+            and self._text_stream.isatty(),
+        )
+
+    @property
+    def line_buffering(self) -> bool:
+        return bool(getattr(self._text_stream, "line_buffering", False))
+
+    def close(self) -> None:
+        self.flush()
+        super().close()
+
+
+def _create_stderr_handler(formatter: logging.Formatter) -> logging.Handler:
+    handler = logging.StreamHandler(_Utf8StderrStream(sys.stderr))
+    handler.setFormatter(formatter)
+    return handler
+
+
 def setup_logger(level: int | str = logging.INFO):
     """Configure logging to only output from this package (swe), not deps."""
+    global _async_dispatcher, _async_handler, _atexit_registered
+
     log_format = "%(asctime)s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -131,59 +324,45 @@ def setup_logger(level: int | str = logging.INFO):
     logger = logging.getLogger(LOG_NAMESPACE)
     logger.setLevel(level)
     logger.propagate = False
-    if not logger.handlers:
-        utf8_stderr = io.TextIOWrapper(
-            sys.stderr.buffer,
-            encoding="utf-8",
-            errors="replace",
-        )
-        handler = logging.StreamHandler(utf8_stderr)
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+    with _async_lock:
+        if _async_dispatcher is None or _async_handler is None:
+            target_handler = _create_stderr_handler(formatter)
+            _async_dispatcher = _AsyncLogDispatcher(
+                target_handlers=[target_handler],
+            )
+            _async_dispatcher.start()
+            _async_handler = _AsyncQueueLogHandler(_async_dispatcher)
+
+        for target in _async_dispatcher.target_handlers:
+            target.setFormatter(formatter)
+
+        for existing in list(logger.handlers):
+            if existing is not _async_handler:
+                logger.removeHandler(existing)
+                existing.close()
+        if _async_handler not in logger.handlers:
+            logger.addHandler(_async_handler)
+
+        if not _atexit_registered:
+            atexit.register(shutdown_logger)
+            _atexit_registered = True
 
     return logger
 
 
-def add_swe_file_handler(log_path: Path) -> None:
-    """Add a file handler to the swe logger for daemon logs.
+def shutdown_logger(timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> None:
+    """Stop the async logging dispatcher after a short best-effort drain."""
+    global _async_dispatcher, _async_handler
 
-    Windows/Linux: Uses simple FileHandler to avoid file locking issues.
-    macOS: Uses RotatingFileHandler with automatic log rotation.
+    with _async_lock:
+        dispatcher = _async_dispatcher
+        handler = _async_handler
+        _async_dispatcher = None
+        _async_handler = None
 
-    Idempotent: if the logger already has a file handler for the same path,
-    no new handler is added (avoids duplicate lines and leaked descriptors
-    when lifespan runs multiple times in the same process).
-
-    Args:
-        log_path: Path to the log file (e.g. WORKING_DIR / "swe.log").
-    """
-    log_path = Path(log_path).resolve()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(LOG_NAMESPACE)
-    for handler in logger.handlers:
-        base = getattr(handler, "baseFilename", None)
-        if base is not None and Path(base).resolve() == log_path:
-            return
-
-    is_windows_or_linux = platform.system() in ("Windows", "Linux")
-    if is_windows_or_linux:
-        file_handler = logging.FileHandler(
-            log_path,
-            encoding="utf-8",
-            mode="a",
-        )
-    else:
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_path,
-            encoding="utf-8",
-            maxBytes=_SWE_LOG_MAX_BYTES,
-            backupCount=_SWE_LOG_BACKUP_COUNT,
-        )
-
-    if platform.system() == "Windows":
-        file_handler.setLevel(logging.INFO)
-
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S"),
-    )
-    logger.addHandler(file_handler)
+    if handler is not None and handler in logger.handlers:
+        logger.removeHandler(handler)
+        handler.close()
+    if dispatcher is not None:
+        dispatcher.stop(timeout=timeout)

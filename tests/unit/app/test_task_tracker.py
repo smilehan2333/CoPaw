@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from swe.app.runner.task_tracker import TaskTracker, _RunState
+from swe.app.runner.tool_output_frames import (
+    emit_tool_output_text,
+    tool_output_invocation,
+)
 
 
 @pytest.mark.asyncio
@@ -112,3 +117,44 @@ async def test_old_run_cleanup_does_not_remove_new_run_state():
     async with tracker.lock:
         tracker._runs.pop("chat-1", None)
     assert await tracker.get_status("chat-1") == "idle"
+
+
+@pytest.mark.asyncio
+async def test_tool_output_frames_are_buffered_for_active_replay():
+    tracker = TaskTracker()
+    release_stream = asyncio.Event()
+
+    async def _stream_fn(_payload):
+        with tool_output_invocation(
+            tool_call_id="call-1",
+            tool_name="execute_shell_command",
+        ):
+            await emit_tool_output_text("stdout", "live output\n")
+        yield 'data: {"normal": true}\n\n'
+        await release_stream.wait()
+
+    queue, is_new = await tracker.attach_or_start("chat-1", {}, _stream_fn)
+    assert is_new is True
+
+    live_sse = await asyncio.wait_for(queue.get(), timeout=1)
+    assert live_sse.startswith("data: ")
+    live_payload = json.loads(live_sse.removeprefix("data: ").strip())
+    assert live_payload == {
+        "object": "tool_output_frame",
+        "tool_call_id": "call-1",
+        "tool_name": "execute_shell_command",
+        "sequence": 1,
+        "source": "stdout",
+        "text": "live output\n",
+        "truncated": False,
+    }
+
+    replay_queue = await tracker.attach("chat-1")
+    assert replay_queue is not None
+    replay_sse = await asyncio.wait_for(replay_queue.get(), timeout=1)
+    replay_payload = json.loads(replay_sse.removeprefix("data: ").strip())
+    assert replay_payload["object"] == "tool_output_frame"
+    assert replay_payload["text"] == "live output\n"
+
+    release_stream.set()
+    await asyncio.wait_for(tracker.wait_all_done(timeout=1), timeout=2)

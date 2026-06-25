@@ -19,11 +19,10 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
-  DeleteOutlined,
   FileOutlined,
-  ReloadOutlined,
   EyeOutlined,
   FolderOutlined,
+  InboxOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ReactMarkdown from "react-markdown";
@@ -38,7 +37,11 @@ import styles from "../index.module.less";
 
 const { Text } = Typography;
 
-export default function OrphanFilesPage() {
+interface OrphanFilesPageProps {
+  refreshKey?: number;
+}
+
+export default function OrphanFilesPage({ refreshKey = 0 }: OrphanFilesPageProps) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [orphanFiles, setOrphanFiles] = useState<OrphanFilesResponse | null>(null);
@@ -48,7 +51,7 @@ export default function OrphanFilesPage() {
 
   useEffect(() => {
     fetchOrphanFiles();
-  }, []);
+  }, [refreshKey]);
 
   const fetchOrphanFiles = async () => {
     setLoading(true);
@@ -62,17 +65,27 @@ export default function OrphanFilesPage() {
     }
   };
 
-  const handleDeleteFile = async (filepath: string) => {
+  const handleArchiveFile = async (filepath: string) => {
     try {
-      const result = await dreamLogsApi.deleteOrphanFile(filepath);
+      const result = await dreamLogsApi.archiveOrphanFiles([filepath]);
       if (result.success) {
-        message.success(t("dreamLogs.orphanFiles.deleteSuccess"));
+        message.success("文件已归档");
         fetchOrphanFiles();
       } else {
         message.error(result.message);
       }
     } catch (error) {
-      message.error(t("dreamLogs.orphanFiles.deleteFailed"));
+      message.error("归档失败");
+    }
+  };
+
+  const handleAutoArchive = async () => {
+    try {
+      const result = await dreamLogsApi.autoArchiveOrphanFiles();
+      message.success(`自动归档 ${result.files_archived.length} 个文件`);
+      fetchOrphanFiles();
+    } catch (error) {
+      message.error("自动归档失败");
     }
   };
 
@@ -146,18 +159,19 @@ export default function OrphanFilesPage() {
           <Button
             type="text"
             size="small"
+            aria-label={`查看 ${record.path}`}
             icon={<EyeOutlined />}
             onClick={() => handlePreview(record.path)}
           />
           <Popconfirm
-            title={t("dreamLogs.orphanFiles.deleteConfirm")}
-            onConfirm={() => handleDeleteFile(record.path)}
+            title="确认归档该文件？"
+            onConfirm={() => handleArchiveFile(record.path)}
           >
             <Button
               type="text"
               size="small"
-              danger
-              icon={<DeleteOutlined />}
+              aria-label={`归档 ${record.path}`}
+              icon={<InboxOutlined />}
             />
           </Popconfirm>
         </Space>
@@ -224,12 +238,14 @@ export default function OrphanFilesPage() {
         className={styles.recordsCard}
         title={t("dreamLogs.orphanFiles.title")}
         extra={
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={fetchOrphanFiles}
-          >
-            {t("common.refresh")}
-          </Button>
+          <Space>
+            <Button
+              icon={<InboxOutlined />}
+              onClick={handleAutoArchive}
+            >
+              自动归档 3 天未修改
+            </Button>
+          </Space>
         }
       >
         <Spin spinning={loading}>

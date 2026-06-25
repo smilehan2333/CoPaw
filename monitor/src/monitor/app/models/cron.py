@@ -100,6 +100,7 @@ class CronJobModel(BaseModel):
     task_session_id: str = Field(default="", description="关联会话ID")
     job_origin: str = Field(default="manual", description="任务来源")
     subscription_key: str = Field(default="", description="订阅任务稳定分组ID")
+    skill_ids: str = Field(default="", description="绑定技能ID，逗号分隔")
     meta: str = Field(default="", description="扩展元数据 (JSON字符串)")
 
     # 状态追踪
@@ -316,6 +317,11 @@ class CronJobSyncRequest(BaseModel):
     task_session_id: str = Field(default="", description="关联会话ID")
     job_origin: str = Field(default="manual", description="任务来源")
     subscription_key: str = Field(default="", description="订阅任务稳定分组ID")
+    skill_ids: str = Field(
+        default="",
+        max_length=200,
+        description="绑定技能ID，逗号分隔",
+    )
     meta: str = Field(default="", description="扩展元数据 (JSON字符串)")
 
     # 状态
@@ -630,18 +636,65 @@ class CronOverviewStatsResponse(BaseModel):
     branch_count: int = Field(default=0, description="分行数量")
     tenant_count: int = Field(default=0, description="租户数量")
     success_rate: float = Field(default=0.0, description="执行成功率")
-    success_count: int = Field(default=0, description="执行成功数")
+    success_count: int = Field(
+        default=0,
+        description="执行成功数（status='success' AND async_status='success'）",
+    )
+    running_count: int = Field(
+        default=0,
+        description="运行中数（status='success' AND async_status IS NULL）",
+    )
     read_tasks: int = Field(
         default=0,
         description="已读任务数（按job_id去重）",
     )
     read_rate: float = Field(default=0.0, description="已读率")
-    error_count: int = Field(default=0, description="报错数量")
-    error_rate: float = Field(default=0.0, description="报错率")
+    error_count: int = Field(
+        default=0,
+        description="执行失败数（综合判断）",
+    )
+    error_rate: float = Field(default=0.0, description="执行失败率")
 
 
 class CronBranchRankingItem(BaseModel):
     """分行综合排行单项。"""
+
+    bbk_id: str = Field(..., description="分行ID")
+    bbk_name: str = Field(..., description="分行名称")
+    skill_count: int = Field(default=0, description="技能数（白名单内）")
+    total_tasks: int = Field(default=0, description="任务总数（生效中）")
+    success_count: int = Field(default=0, description="成功执行数")
+    read_tasks: int = Field(default=0, description="已读任务数")
+    involved_managers: int = Field(default=0, description="涉及客户经理数")
+    result_view_managers: int = Field(
+        default=0,
+        description="查看结果的客户经理数",
+    )
+    plan_managers: int = Field(default=0, description="查看经营方案客户经理数")
+    insight_managers: int = Field(default=0, description="去洞察的客户经理数")
+    phone_managers: int = Field(default=0, description="去电访的客户经理数")
+    recommended_customers: int = Field(default=0, description="推荐的客户数")
+    viewed_customers: int = Field(
+        default=0,
+        description="被客户经理查看的客户数",
+    )
+    insight_customers: int = Field(default=0, description="去洞察客户数")
+    phone_customers: int = Field(default=0, description="去电访客户数")
+
+
+class CronBranchRankingResponse(BaseModel):
+    """分行综合排行响应。"""
+
+    start_date: str = Field(..., description="开始日期")
+    end_date: str = Field(..., description="结束日期")
+    items: List[CronBranchRankingItem] = Field(
+        default_factory=list,
+        description="分行综合排行列表",
+    )
+
+
+class CronBranchTaskRankingItem(BaseModel):
+    """分行任务视角排行单项。"""
 
     bbk_id: str = Field(..., description="分行ID")
     bbk_name: str = Field(..., description="分行名称")
@@ -653,20 +706,20 @@ class CronBranchRankingItem(BaseModel):
     plan_count: int = Field(default=0, description="查看方案任务数")
     insight_count: int = Field(default=0, description="点击去洞察任务数")
     phone_count: int = Field(default=0, description="点击去电访任务数")
-    plan_clicks: int = Field(default=0, description="查看方案点击数")
-    insight_clicks: int = Field(default=0, description="点击去洞察点击数")
-    phone_clicks: int = Field(default=0, description="点击去电访点击数")
+    plan_clicks: int = Field(default=0, description="方案点击数")
+    insight_clicks: int = Field(default=0, description="洞察点击数")
+    phone_clicks: int = Field(default=0, description="电访点击数")
     error_count: int = Field(default=0, description="报错执行次数")
 
 
-class CronBranchRankingResponse(BaseModel):
-    """分行综合排行响应。"""
+class CronBranchTaskRankingResponse(BaseModel):
+    """分行任务视角排行响应。"""
 
     start_date: str = Field(..., description="开始日期")
     end_date: str = Field(..., description="结束日期")
-    items: List[CronBranchRankingItem] = Field(
+    items: List[CronBranchTaskRankingItem] = Field(
         default_factory=list,
-        description="分行综合排行列表",
+        description="分行任务视角排行列表",
     )
 
 
@@ -741,6 +794,37 @@ class BranchSkillResponse(BaseModel):
     )
 
 
+class BranchManagerSummaryItem(BaseModel):
+    """分行客户经理汇总单项。"""
+
+    user_id: str = Field(..., description="客户经理ID")
+    user_name: str = Field(default="", description="客户经理姓名")
+    skill_count: int = Field(default=0, description="技能数量（使用的技能数）")
+    total_tasks: int = Field(default=0, description="任务总数（生效中的任务）")
+    success_count: int = Field(default=0, description="成功执行数")
+    read_tasks: int = Field(default=0, description="已读任务数")
+    recommended_customers: int = Field(default=0, description="推荐的客户数")
+    viewed_customers: int = Field(
+        default=0,
+        description="被客户经理查看的客户数",
+    )
+    insight_customers: int = Field(default=0, description="去洞察客户数")
+    phone_customers: int = Field(default=0, description="去电访客户数")
+
+
+class BranchManagerSummaryResponse(BaseModel):
+    """分行客户经理汇总响应。"""
+
+    start_date: str = Field(..., description="开始日期")
+    end_date: str = Field(..., description="结束日期")
+    bbk_id: str = Field(..., description="分行ID")
+    bbk_name: str = Field(..., description="分行名称")
+    items: List[BranchManagerSummaryItem] = Field(
+        default_factory=list,
+        description="客户经理汇总列表",
+    )
+
+
 class BranchSkillManagerItem(BaseModel):
     """分行+技能的客户经理维度单项。"""
 
@@ -792,6 +876,59 @@ class BranchSkillManagerCustomerResponse(BaseModel):
     skill_name: str = Field(..., description="技能名称")
     user_id: str = Field(..., description="客户经理ID")
     items: List[BranchSkillManagerCustomerItem] = Field(
+        default_factory=list,
+        description="客户维度列表",
+    )
+
+
+class ManagerSkillItem(BaseModel):
+    """客户经理技能维度单项。"""
+
+    skill_name: str = Field(..., description="技能名称")
+    cron_task_count: int = Field(default=0, description="定时任务数")
+    success_count: int = Field(default=0, description="成功执行数")
+    success_rate: float = Field(default=0.0, description="成功率")
+    read_count: int = Field(default=0, description="已读任务数")
+    error_count: int = Field(default=0, description="报错次数")
+
+
+class ManagerSkillResponse(BaseModel):
+    """客户经理技能维度响应。"""
+
+    start_date: str = Field(..., description="开始日期")
+    end_date: str = Field(..., description="结束日期")
+    bbk_id: str = Field(..., description="分行ID")
+    user_id: str = Field(..., description="客户经理ID")
+    user_name: str = Field(..., description="客户经理姓名")
+    items: List[ManagerSkillItem] = Field(
+        default_factory=list,
+        description="技能维度列表",
+    )
+
+
+class ManagerCustomerItem(BaseModel):
+    """客户经理客户维度单项。"""
+
+    customer_id: str = Field(default="", description="客户ID")
+    customer_name: str = Field(default="", description="客户名称")
+    clicked_plan: bool = Field(default=False, description="是否点击方案")
+    clicked_insight: bool = Field(default=False, description="是否点击洞察")
+    clicked_phone: bool = Field(default=False, description="是否点击电访")
+    click_time: Optional[str] = Field(
+        default=None,
+        description="点击客户的时间",
+    )
+
+
+class ManagerCustomerResponse(BaseModel):
+    """客户经理客户维度响应。"""
+
+    start_date: str = Field(..., description="开始日期")
+    end_date: str = Field(..., description="结束日期")
+    bbk_id: str = Field(..., description="分行ID")
+    user_id: str = Field(..., description="客户经理ID")
+    user_name: str = Field(..., description="客户经理姓名")
+    items: List[ManagerCustomerItem] = Field(
         default_factory=list,
         description="客户维度列表",
     )
@@ -881,6 +1018,7 @@ def convert_spec_to_sync_request(
         task_session_id=task_session_id,
         job_origin=job_origin,
         subscription_key=subscription_key,
+        skill_ids=spec_dict.get("skill_ids", ""),
         meta=json.dumps(meta, ensure_ascii=False) if meta else "",
         status=status,
         pause_reason=pause_reason,

@@ -72,7 +72,6 @@ class CommandRegistry:
         self.register_command("/daemon restart", priority_level=10)
         self.register_command("/daemon reload-config", priority_level=10)
         self.register_command("/daemon version", priority_level=10)
-        self.register_command("/daemon logs", priority_level=10)
         self.register_command("/daemon approve", priority_level=10)
 
         # Daemon short aliases
@@ -81,7 +80,6 @@ class CommandRegistry:
         self.register_command("/reload-config", priority_level=10)
         self.register_command("/reload_config", priority_level=10)
         self.register_command("/version", priority_level=10)
-        self.register_command("/logs", priority_level=10)
         self.register_command("/approve", priority_level=10)
 
         # Note: Conversation commands (/compact, /new) remain at

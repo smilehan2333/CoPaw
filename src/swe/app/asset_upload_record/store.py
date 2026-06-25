@@ -22,6 +22,7 @@ class AssetUploadRecordStore:
             file_size=int(row["file_size"]),
             asset_path=row["asset_path"],
             source_id=row.get("source_id"),
+            template_flag=row.get("template_flag"),
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
         )
@@ -33,6 +34,7 @@ class AssetUploadRecordStore:
         file_size: int,
         asset_path: str,
         source_id: Optional[str] = None,
+        template_flag: Optional[str] = None,
     ) -> Optional[int]:
         """插入或更新一条上传记录，返回自增 ID。"""
         if not self._use_db:
@@ -40,18 +42,25 @@ class AssetUploadRecordStore:
 
         query = """
             INSERT INTO swe_asset_upload_record
-                (file_name, file_size, asset_path, source_id)
-            VALUES (%s, %s, %s, %s)
+                (file_name, file_size, asset_path, source_id, template_flag)
+            VALUES (%s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 file_size = VALUES(file_size),
                 asset_path = VALUES(asset_path),
-                source_id = VALUES(source_id)
+                source_id = VALUES(source_id),
+                template_flag = VALUES(template_flag)
         """
         async with self.db.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     query,
-                    (file_name, file_size, asset_path, source_id),
+                    (
+                        file_name,
+                        file_size,
+                        asset_path,
+                        source_id,
+                        template_flag,
+                    ),
                 )
                 return cur.lastrowid or None
 
@@ -118,10 +127,15 @@ class AssetUploadRecordStore:
         if not self._use_db:
             return []
 
-        query = "SELECT id, file_name FROM swe_asset_upload_record ORDER BY created_at DESC"
+        query = "SELECT id, file_name, template_flag FROM swe_asset_upload_record ORDER BY created_at DESC"
         rows = await self.db.fetch_all(query, ())
         return [
-            {"id": row["id"], "file_name": row["file_name"]} for row in rows
+            {
+                "id": row["id"],
+                "file_name": row["file_name"],
+                "template_flag": row.get("template_flag"),
+            }
+            for row in rows
         ]
 
     async def get_template_id_by_name(self, file_name: str) -> Optional[int]:

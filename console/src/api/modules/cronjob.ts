@@ -2,6 +2,7 @@ import { request } from "../request";
 import type {
   CronBroadcastChildRef,
   CronBroadcastChildrenBatchResponse,
+  CronBroadcastChildrenRefreshResponse,
   CronBroadcastChildrenResponse,
   CronBroadcastOptions,
   CronBroadcastResponse,
@@ -89,6 +90,14 @@ export const cronJobApi = {
   listCronBroadcastChildren: (jobId: string) =>
     request<CronBroadcastChildrenResponse>(
       `/cron/jobs/${encodeURIComponent(jobId)}/broadcast/children`,
+    ),
+
+  refreshCronBroadcastChildren: (jobId: string) =>
+    request<CronBroadcastChildrenRefreshResponse>(
+      `/cron/jobs/${encodeURIComponent(jobId)}/broadcast/children/refresh`,
+      {
+        method: "POST",
+      },
     ),
 
   deleteCronBroadcastChildren: (

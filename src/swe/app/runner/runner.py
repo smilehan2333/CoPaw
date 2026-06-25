@@ -48,6 +48,9 @@ from ...agents.skills_manager import (
     get_workspace_skills_dir,
 )
 from ...agents.hook_runtime import HookRuntime
+from ...agents.hook_runtime.conversation_snapshot import (
+    capture_conversation_snapshot,
+)
 from ...agents.hook_runtime.models import (
     HookConfig,
     HookContext,
@@ -242,6 +245,11 @@ def _get_agent_memory_content(states: dict[str, Any]) -> list[Any] | None:
     if not isinstance(content, list) or not content:
         return None
     return content
+
+
+@dataclass(frozen=True)
+class _PersistedMemorySnapshot:
+    content: list[Any]
 
 
 def _last_tool_guard_denied_index(content: list[Any]) -> int | None:
@@ -645,6 +653,7 @@ async def _emit_runner_hook(
     assistant_response: str | None = None,
     source: str | None = None,
     model: str | None = None,
+    agent: Any | None = None,
 ) -> MergedHookResult:
     agent_hooks = getattr(agent_config, "hooks", None)
     if not isinstance(agent_hooks, HookConfig):
@@ -663,9 +672,65 @@ async def _emit_runner_hook(
         source=source,
         model=model,
     )
+
+    async def _conversation_snapshot_provider():
+        if agent is not None:
+            return await capture_conversation_snapshot(
+                getattr(agent, "memory", None),
+            )
+        return await _capture_persisted_runner_conversation_snapshot(
+            request=request,
+            runner=runner,
+        )
+
     return await runtime.emit(
         context,
         workspace_dir=Path(runner.workspace_dir or WORKING_DIR),
+        conversation_snapshot_provider=_conversation_snapshot_provider,
+    )
+
+
+async def _capture_persisted_runner_conversation_snapshot(
+    *,
+    request: Any,
+    runner: "AgentRunner",
+) -> dict[str, Any] | None:
+    if getattr(request, "skip_history", False):
+        return None
+
+    session = getattr(runner, "session", None)
+    get_session_state_dict = getattr(session, "get_session_state_dict", None)
+    if not callable(get_session_state_dict):
+        return None
+
+    session_id = getattr(request, "session_id", None)
+    if not session_id:
+        return None
+
+    try:
+        state = await get_session_state_dict(
+            session_id=_coerce_session_storage_id(session_id),
+            user_id=_coerce_session_storage_user_id(
+                getattr(request, "user_id", None),
+            ),
+            allow_not_exist=True,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to load persisted memory for hook snapshot",
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(state, dict):
+        return None
+
+    content = _get_agent_memory_content(state)
+    if content is None:
+        return None
+
+    return await capture_conversation_snapshot(
+        _PersistedMemorySnapshot(content=content),
     )
 
 
@@ -743,7 +808,7 @@ async def _build_and_connect_mcp_clients(
                 trace_id=trace_id,
             )
             if client is not None:
-                await client.connect()
+                await client.connect(timeout=_MCP_CONNECT_TIMEOUT_SECONDS)
                 clients.append(client)
                 logger.info(f"MCP client '{key}' created and connected")
         except asyncio.CancelledError:
@@ -1441,19 +1506,21 @@ def _request_source_id(request: AgentRequest) -> str:
 
 def _request_user_name(request: AgentRequest) -> str | None:
     """按兼容顺序读取通道注入的用户名称。"""
-    return getattr(request, "user_name", None) or getattr(
-        getattr(request, "state", None),
-        "user_name",
-        None,
+    channel_meta = getattr(request, "channel_meta", None) or {}
+    return (
+        getattr(request, "user_name", None)
+        or getattr(getattr(request, "state", None), "user_name", None)
+        or channel_meta.get("user_name")
     )
 
 
 def _request_bbk_id(request: AgentRequest) -> str | None:
     """按兼容顺序读取通道注入的 BBK 标识。"""
-    return getattr(request, "bbk_id", None) or getattr(
-        getattr(request, "state", None),
-        "bbk_id",
-        None,
+    channel_meta = getattr(request, "channel_meta", None) or {}
+    return (
+        getattr(request, "bbk_id", None)
+        or getattr(getattr(request, "state", None), "bbk_id", None)
+        or channel_meta.get("bbk_id")
     )
 
 
@@ -1815,8 +1882,8 @@ class AgentRunner(Runner):
     ) -> str | None:
         """启动 query 追踪；追踪不可用时只记录日志并继续主流程。
 
-        如果 request 中已有 trace_id（由外部传入），则使用 attach_existing 模式
-        仅设置 context 而不创建新的数据库记录。
+        默认情况下，query 请求总是创建新的 trace。
+        只有显式声明要续接外部 trace 时，才会使用 attach_existing 模式。
         """
         if not has_trace_manager():
             return None
@@ -1825,8 +1892,8 @@ class AgentRunner(Runner):
             trace_mgr = get_trace_manager()
             if not trace_mgr.enabled:
                 return None
-            # 检查是否已有外部传入的 trace_id
             existing_trace_id = getattr(request, "trace_id", None)
+            attach_existing = self._should_attach_existing_trace(request)
             resolved_identity = await resolve_user_identity(
                 tenant_id=getattr(request, "user_id", None),
                 source_id=_request_source_id(request),
@@ -1843,9 +1910,8 @@ class AgentRunner(Runner):
                 user_name=resolved_identity.user_name,
                 bbk_id=resolved_identity.bbk_id,
                 session_name=_session_name_from_messages(msgs),
-                trace_id=existing_trace_id,  # 使用传入的 trace_id 或 None
-                attach_existing=existing_trace_id
-                is not None,  # 如果有传入 trace_id，仅 attach
+                trace_id=existing_trace_id if attach_existing else None,
+                attach_existing=attach_existing,
             )
             if trace_id:
                 # 通道层负责把事件发给前端，这里写回 request 让 SSE 能透传 trace_id。
@@ -1855,6 +1921,19 @@ class AgentRunner(Runner):
         except Exception as e:
             logger.warning("Failed to start trace: %s", e)
             return None
+
+    @staticmethod
+    def _should_attach_existing_trace(request: AgentRequest) -> bool:
+        """判断当前请求是否显式要求续接已有 trace。"""
+        trace_id = getattr(request, "trace_id", None)
+        if not trace_id:
+            return False
+
+        if bool(getattr(request, "trace_attach_existing", False)):
+            return True
+
+        channel_meta = getattr(request, "channel_meta", None) or {}
+        return bool(channel_meta.get("trace_attach_existing"))
 
     async def _generate_session_title_before_stream(
         self,
@@ -2141,6 +2220,8 @@ class AgentRunner(Runner):
             "agent_id": self.agent_id,
             "tenant_id": self.tenant_id or "",
             "source_id": _request_source_id(request),
+            "user_name": _request_user_name(request),
+            "bbk_id": _request_bbk_id(request),
             "trace_id": getattr(request, "trace_id", None),
             "transcript_path": (
                 self.session._get_save_path(session_id, user_id)
@@ -2664,6 +2745,7 @@ class AgentRunner(Runner):
             overlay=runtime.hook_overlay,
             prompt=plan.original_user_message,
             assistant_response=outcome.assistant_response,
+            agent=runtime.agent,
         )
 
     async def _stream_completion_lifecycle(
@@ -2778,6 +2860,7 @@ class AgentRunner(Runner):
             overlay=runtime.hook_overlay,
             prompt=plan.original_user_message,
             assistant_response=outcome.assistant_response,
+            agent=runtime.agent,
         )
         stop_context = _format_hook_additional_context(stop_hook_result)
         if stop_context:
@@ -3492,6 +3575,10 @@ class AgentRunner(Runner):
             preflight=attempt_input.preflight,
         )
         if attempt_state.runtime_start.block_response is not None:
+            await self._end_trace_if_needed(
+                attempt_input.trace_id,
+                TraceStatus.COMPLETED,
+            )
             yield attempt_state.runtime_start.block_response, True
             attempt_state.should_return = True
             return
@@ -3688,7 +3775,14 @@ class AgentRunner(Runner):
                     ):
                         yield msg, last
         finally:
-            reset_current_file_url_network(file_url_network_token)
+            try:
+                reset_current_file_url_network(file_url_network_token)
+            except ValueError:
+                logger.debug(
+                    "Skipped file URL network context reset from a different "
+                    "async context",
+                    exc_info=True,
+                )
             cleanup_runtime = attempt_state.runtime
             cleanup_state_loaded = attempt_state.session_state_loaded
             if cleanup_runtime is None and retry_state.prev_agent is not None:

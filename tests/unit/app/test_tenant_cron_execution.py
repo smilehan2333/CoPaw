@@ -154,6 +154,36 @@ def _build_agent_job(workspace_dir: str, timeout_seconds: int = 1) -> object:
     )
 
 
+@pytest.mark.asyncio
+async def test_prepare_agent_execution_marks_trace_for_attach_existing(
+    monkeypatch,
+) -> None:
+    executor = CronExecutor(
+        runner=_Runner(),
+        channel_manager=_ChannelManager(),
+    )
+    job = _build_agent_job("/tmp/tenant-a/workspaces/alpha")
+
+    monkeypatch.setattr(
+        executor,
+        "_create_trace_for_agent_job",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result="trace-cron"),
+    )
+
+    _runtime_tenant_id, trace_id, req, _stream_state = (
+        await executor._prepare_agent_execution(
+            job,
+            "user-a",
+            "session-a",
+            {},
+        )
+    )
+
+    assert trace_id == "trace-cron"
+    assert req["trace_id"] == "trace-cron"
+    assert req["trace_attach_existing"] is True
+
+
 class _Provider:
     def __init__(self, models: list[str]):
         self._models = set(models)

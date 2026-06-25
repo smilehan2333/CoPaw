@@ -213,14 +213,13 @@ def test_app_startup_and_console() -> None:
         _stop_app_process(process, log_thread)
 
 
-def test_app_startup_without_swe_log_file(tmp_path: Path) -> None:
-    """关闭文件日志时应用仍应启动且不创建 swe.log。"""
+def test_app_startup_uses_stdout_stderr_logging(tmp_path: Path) -> None:
+    """应用启动应通过 stdout/stderr 输出日志，不再暴露 swe.log 开关。"""
     host = "127.0.0.1"
     port = _find_free_port(host)
     log_lines: list[str] = []
     working_dir = tmp_path / "working"
     env = _subprocess_env()
-    env["SWE_FILE_LOG_ENABLED"] = "false"
     env["SWE_WORKING_DIR"] = str(working_dir)
     process = _start_app_process(host, port, env)
 
@@ -235,6 +234,8 @@ def test_app_startup_without_swe_log_file(tmp_path: Path) -> None:
 
     try:
         _wait_for_backend_ready(process, host, port, log_lines)
-        assert not (working_dir / "swe.log").exists()
+        logs = "".join(log_lines)
+        assert "Performing minimal startup" in logs
+        assert "SWE_FILE_LOG_ENABLED" not in logs
     finally:
         _stop_app_process(process, log_thread)

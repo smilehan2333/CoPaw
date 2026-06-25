@@ -5,6 +5,7 @@ import asyncio
 import os
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -26,6 +27,11 @@ from .broadcast import (
     MIN_BROADCAST_OFFSET_WINDOW_HOURS,
     compute_broadcast_offsets,
     shift_cron_expression,
+)
+from .broadcast_children_store import (
+    BroadcastChildrenLookupStatus,
+    CronBroadcastChildrenSnapshot,
+    CronBroadcastChildrenStore,
 )
 from .manager import CronManager
 from .models import CronJobListItem, CronJobSpec, CronJobView
@@ -129,6 +135,15 @@ class CronBroadcastChildItem(BaseModel):
 
 class CronBroadcastChildrenResponse(BaseModel):
     items: list[CronBroadcastChildItem] = Field(default_factory=list)
+    status: BroadcastChildrenLookupStatus = "idle"
+    tenant_count: int = 0
+    failed_tenants: int = 0
+    failure_summary: str | None = None
+    updated_at: datetime | None = None
+
+
+class CronBroadcastChildrenRefreshResponse(CronBroadcastChildrenResponse):
+    reused: bool = False
 
 
 class CronBroadcastChildRef(BaseModel):
@@ -352,6 +367,158 @@ def _request_agent_id(request: Request) -> str:
     return getattr(request.state, "agent_id", None) or "default"
 
 
+def _broadcast_children_key_parts(
+    request: Request,
+    source_job: CronJobSpec,
+) -> dict[str, str]:
+    return {
+        "agent_id": _request_agent_id(request),
+        "source_id": _request_source_id(request) or source_job.source_id or "",
+        "tenant_id": (
+            getattr(request.state, "tenant_id", None)
+            or source_job.tenant_id
+            or ""
+        ),
+        "job_id": source_job.id,
+    }
+
+
+def _broadcast_children_task_key(parts: dict[str, str]) -> str:
+    return "|".join(
+        [
+            parts["agent_id"],
+            parts["source_id"],
+            parts["tenant_id"],
+            parts["job_id"],
+        ],
+    )
+
+
+def _get_broadcast_children_store(request: Request) -> CronBroadcastChildrenStore:
+    store = getattr(
+        request.app.state,
+        "cron_broadcast_children_store",
+        None,
+    )
+    if store is None:
+        store = CronBroadcastChildrenStore()
+        request.app.state.cron_broadcast_children_store = store
+    return store
+
+
+def _get_broadcast_children_tasks(
+    request: Request,
+) -> dict[str, asyncio.Task]:
+    tasks = getattr(
+        request.app.state,
+        "cron_broadcast_children_tasks",
+        None,
+    )
+    if tasks is None:
+        tasks = {}
+        request.app.state.cron_broadcast_children_tasks = tasks
+    return tasks
+
+
+async def _get_broadcast_children_snapshot_response(
+    request: Request,
+    source_job: CronJobSpec,
+    *,
+    status_fallback: BroadcastChildrenLookupStatus = "idle",
+) -> CronBroadcastChildrenResponse:
+    store = _get_broadcast_children_store(request)
+    parts = _broadcast_children_key_parts(request, source_job)
+    snapshot = await store.get_snapshot(**parts)
+    if snapshot is None:
+        return CronBroadcastChildrenResponse(status=status_fallback)
+    return _snapshot_to_response(snapshot)
+
+
+async def _schedule_broadcast_children_refresh(
+    request: Request,
+    source_job: CronJobSpec,
+    context: _BroadcastContext,
+    tenant_ids: list[str],
+) -> tuple[CronBroadcastChildrenResponse, bool]:
+    store = _get_broadcast_children_store(request)
+    tasks = _get_broadcast_children_tasks(request)
+    parts = _broadcast_children_key_parts(request, source_job)
+    claimed = await store.mark_running(
+        **parts,
+        tenant_count=len(tenant_ids),
+    )
+    snapshot = await store.get_snapshot(**parts)
+    response = _snapshot_to_response(snapshot) if snapshot else (
+        CronBroadcastChildrenResponse(
+            status="running",
+            tenant_count=len(tenant_ids),
+        )
+    )
+    if not claimed:
+        return response, True
+
+    task_key = _broadcast_children_task_key(parts)
+    refresh_task = asyncio.create_task(
+        _refresh_broadcast_children_snapshot(
+            store,
+            parts,
+            context,
+            tenant_ids,
+        ),
+        name=f"cron-broadcast-children-refresh-{context.source_job.id}",
+    )
+    tasks[task_key] = refresh_task
+    refresh_task.add_done_callback(lambda _task: tasks.pop(task_key, None))
+    return response, False
+
+
+async def _refresh_broadcast_children_snapshot(
+    store: CronBroadcastChildrenStore,
+    parts: dict[str, str],
+    context: _BroadcastContext,
+    tenant_ids: list[str],
+) -> None:
+    try:
+        items = await _list_broadcast_children_for_tenants(
+            context,
+            tenant_ids,
+        )
+        await store.record_completed(
+            **parts,
+            items=[
+                item.model_dump(mode="json")
+                for item in items
+            ],
+            tenant_count=len(tenant_ids),
+            failed_tenants=0,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        await store.record_failed(
+            **parts,
+            tenant_count=len(tenant_ids),
+            failure_summary=str(exc),
+        )
+
+
+def _snapshot_to_response(
+    snapshot: CronBroadcastChildrenSnapshot,
+) -> CronBroadcastChildrenResponse:
+    items: list[CronBroadcastChildItem] = []
+    for item in snapshot.items:
+        try:
+            items.append(CronBroadcastChildItem.model_validate(item))
+        except Exception:
+            continue
+    return CronBroadcastChildrenResponse(
+        items=items,
+        status=snapshot.status,
+        tenant_count=snapshot.tenant_count,
+        failed_tenants=snapshot.failed_tenants,
+        failure_summary=snapshot.failure_summary,
+        updated_at=snapshot.updated_at,
+    )
+
+
 def _validate_target_tenant_id(tenant_id: str) -> str:
     value = str(tenant_id or "").strip()
     if not value:
@@ -403,6 +570,10 @@ def _build_broadcast_job(
         {
             "creator_user_id": target_tenant_id,
             "broadcast_source_job_id": source_job.id,
+            "broadcast_source_job_name": source_job.name,
+            "broadcast_source_tenant_id": source_job.tenant_id,
+            "broadcast_source_tenant_name": source_job.tenant_name,
+            "broadcast_source_bbk_id": source_job.bbk_id,
             "broadcast_original_cron": source_job.schedule.cron,
             "broadcast_original_timezone": source_job.schedule.timezone,
             "broadcast_offset_minutes": offset_minutes,
@@ -1088,14 +1259,38 @@ async def list_broadcast_children(
     mgr: CronManager = Depends(get_cron_manager),
 ) -> CronBroadcastChildrenResponse:
     source_job = await _get_source_job_or_404(mgr, job_id)
+    return await _get_broadcast_children_snapshot_response(
+        request,
+        source_job,
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/broadcast/children/refresh",
+    response_model=CronBroadcastChildrenRefreshResponse,
+)
+async def refresh_broadcast_children(
+    request: Request,
+    job_id: str,
+    mgr: CronManager = Depends(get_cron_manager),
+) -> CronBroadcastChildrenRefreshResponse:
+    source_job = await _get_source_job_or_404(mgr, job_id)
     tenant_ids = await _list_source_tenant_ids(request)
     context = await _build_child_management_context(
         request,
         source_job,
         tenant_ids,
     )
-    items = await _list_broadcast_children_for_tenants(context, tenant_ids)
-    return CronBroadcastChildrenResponse(items=items)
+    snapshot, reused = await _schedule_broadcast_children_refresh(
+        request,
+        source_job,
+        context,
+        tenant_ids,
+    )
+    return CronBroadcastChildrenRefreshResponse(
+        **snapshot.model_dump(),
+        reused=reused,
+    )
 
 
 @router.post(

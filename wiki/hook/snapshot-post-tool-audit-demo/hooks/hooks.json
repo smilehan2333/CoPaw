@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "events": {
+    "PostToolUse": [
+      {
+        "id": "snapshot-tool-audit",
+        "matcher": {
+          "tools": ["execute_shell_command"]
+        },
+        "hooks": [
+          {
+            "id": "write-snapshot-audit",
+            "type": "command",
+            "argv": [
+              "python",
+              "scripts/write_snapshot_audit.py"
+            ],
+            "includeConversationSnapshot": true,
+            "conversationSnapshotLimit": 20,
+            "timeout": 5,
+            "failPolicy": "allow"
+          }
+        ]
+      }
+    ]
+  }
+}

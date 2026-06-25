@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Body, File, Header, HTTPException, Request
+from fastapi import APIRouter, Body, File, Form, Header, HTTPException, Request
 from fastapi import UploadFile
 from pydantic import BaseModel, Field
 
@@ -533,6 +533,8 @@ def _read_text_asset(file_name: str) -> InternalTextAssetReadResponse:
 
 async def _save_uploaded_asset_file(
     file: UploadFile,
+    *,
+    template_flag: Optional[str] = None,
 ) -> InternalAssetUploadResponse:
     safe_file_name = _validate_asset_file_name(file.filename or "")
     content = await file.read()
@@ -552,6 +554,7 @@ async def _save_uploaded_asset_file(
             file_name=safe_file_name,
             file_size=file_size,
             asset_path=asset_path,
+            template_flag=template_flag,
         )
     except Exception:
         logger.warning(
@@ -819,9 +822,10 @@ async def internal_batch_initialize_tenants(
 )
 async def upload_asset(
     file: UploadFile = File(...),
+    template_flag: Optional[str] = Form(None),
 ) -> InternalAssetUploadResponse:
     """公开上传 asset 文件，不校验内部服务 Token。"""
-    return await _save_uploaded_asset_file(file)
+    return await _save_uploaded_asset_file(file, template_flag=template_flag)
 
 
 @public_router.get(
@@ -1067,73 +1071,6 @@ async def refresh_external_cron_jobs(request: Request):
 
 
 @router.post("/cron/callback")
-async def _dispatch_cron_task(
-    request: Request,
-    task_type: str,
-    tenant_id: str,
-    source_id: Optional[str],
-    agent_id: str,
-    job_id: str,
-) -> None:
-    """根据 task_type 分发定时任务到对应处理器。"""
-    if task_type == "cleanup":
-        if not source_id:
-            raise HTTPException(
-                status_code=400,
-                detail="source_id required for task_type=cleanup",
-            )
-        source_scheduler = getattr(
-            request.app.state,
-            "source_system_task_scheduler",
-            None,
-        )
-        if source_scheduler is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Source system task scheduler not available",
-            )
-        cleanup_result = await source_scheduler.run_task_session_cleanup(
-            source_id=source_id,
-        )
-        logger.info(
-            "Source task session cleanup result: %s",
-            cleanup_result,
-        )
-        return
-
-    manager = getattr(request.app.state, "multi_agent_manager", None)
-    if manager is None:
-        logger.warning("MultiAgentManager not initialized")
-        raise HTTPException(
-            status_code=503,
-            detail="Manager not available",
-        )
-    runtime_tenant_id = (
-        resolve_runtime_tenant_id(tenant_id, source_id) or tenant_id
-    )
-    mgr = await _get_cron_manager(manager, runtime_tenant_id, agent_id)
-    if mgr is None:
-        raise HTTPException(
-            status_code=404,
-            detail="CronManager not found",
-        )
-    if task_type == "heartbeat":
-        await mgr.run_heartbeat()
-    elif task_type == "dream":
-        await mgr.run_dream()
-    else:
-        if not job_id:
-            raise HTTPException(
-                status_code=400,
-                detail="job_id required for task_type=job",
-            )
-        await mgr.run_job(
-            job_id,
-            is_manual=False,
-            source_id=source_id,
-        )
-
-
 async def internal_cron_callback(
     request: Request,
     x_internal_token: Optional[str] = Header(
@@ -1154,6 +1091,7 @@ async def internal_cron_callback(
 
     job_param = body.get("jobParam") or body.get("job_param") or ""
     if job_param:
+        # base64 JSON 包裹格式：jobParam 编码后下发，回调时原样传回
         try:
             params = json.loads(base64.urlsafe_b64decode(job_param))
         except Exception as e:
@@ -1163,6 +1101,7 @@ async def internal_cron_callback(
                 detail=f"Invalid jobParam: {e}",
             )
     else:
+        # 直接参数格式：外部平台直接将参数字段展开在 body 中
         params = body
 
     try:
@@ -1178,14 +1117,62 @@ async def internal_cron_callback(
         )
 
     try:
-        await _dispatch_cron_task(
-            request,
-            task_type,
-            tenant_id,
-            source_id,
-            agent_id,
-            job_id,
-        )
+        if task_type == "cleanup":
+            if not source_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="source_id required for task_type=cleanup",
+                )
+            source_scheduler = getattr(
+                request.app.state,
+                "source_system_task_scheduler",
+                None,
+            )
+            if source_scheduler is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Source system task scheduler not available",
+                )
+            cleanup_result = await source_scheduler.run_task_session_cleanup(
+                source_id=source_id,
+            )
+            logger.info(
+                "Source task session cleanup result: %s",
+                cleanup_result,
+            )
+        else:
+            manager = getattr(request.app.state, "multi_agent_manager", None)
+            if manager is None:
+                logger.warning("MultiAgentManager not initialized")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Manager not available",
+                )
+            runtime_tenant_id = (
+                resolve_runtime_tenant_id(tenant_id, source_id) or tenant_id
+            )
+            mgr = await _get_cron_manager(manager, runtime_tenant_id, agent_id)
+            if mgr is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="CronManager not found",
+                )
+            if task_type == "heartbeat":
+                await mgr.run_heartbeat()
+            elif task_type == "dream":
+                await mgr.run_dream()
+            else:
+                if not job_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="job_id required for task_type=job",
+                    )
+                # 调度回调触发的是自动执行，不应走手动执行分支。
+                await mgr.run_job(
+                    job_id,
+                    is_manual=False,
+                    source_id=source_id,
+                )
         logger.info(
             "Callback dispatched: type=%s tenant=%s agent=%s job=%s",
             task_type,

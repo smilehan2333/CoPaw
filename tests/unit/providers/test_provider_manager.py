@@ -444,7 +444,7 @@ async def test_invalid_external_builtin_provider_file_falls_back_to_default(
     assert manager.get_provider("openai").api_key == ""
 
 
-def test_migrate_legacy_file_and_persist_active_model(
+def test_provider_manager_ignores_legacy_providers_json(
     isolated_secret_dir,
     monkeypatch,
 ) -> None:
@@ -469,29 +469,22 @@ def test_migrate_legacy_file_and_persist_active_model(
 
     manager = ProviderManager()
 
-    assert legacy_file.exists() is False
-    assert manager.active_model is not None
-    assert manager.active_model.provider_id == "dashscope"
-    assert manager.active_model.model == "qwen3-max"
+    assert legacy_file.exists()
+    assert manager.active_model is None
 
     dashscope_provider = manager.get_provider("dashscope")
     assert dashscope_provider is not None
-    assert dashscope_provider.api_key == "sk-test-legacy-secret"
+    assert dashscope_provider.api_key == ""
 
-    legacy_custom = manager.get_provider("mydash")
-    assert legacy_custom is not None
-    assert isinstance(legacy_custom, OpenAIProvider)
-    assert len(legacy_custom.extra_models) == 1
-    assert legacy_custom.extra_models[0].id == "qwen3-max"
-    assert legacy_custom.api_key == "sk-test-legacy-custom-secret"
+    assert manager.get_provider("mydash") is None
 
     legacy_ollama = manager.get_provider("ollama")
-    assert legacy_ollama.base_url == "http://myhost:11434"
+    assert legacy_ollama.base_url != "http://myhost:11434"
 
     active_model_file = (
         isolated_secret_dir / "default" / "providers" / "active_model.json"
     )
-    assert active_model_file.exists()
+    assert not active_model_file.exists()
 
 
 async def test_add_custom_provider_conflict_resolution_loops_until_unique(
@@ -854,13 +847,13 @@ class TestProviderManagerTenantIsolation:
 
 
 class TestLegacyTenantModelsRecovery:
-    """Tests for recovery from legacy tenant_models.json."""
+    """Tests for ignoring legacy tenant_models.json."""
 
-    def test_recover_active_model_from_legacy_tenant_models(
+    def test_ignores_legacy_tenant_models_without_active_model_file(
         self,
         isolated_secret_dir,
     ) -> None:
-        """ProviderManager recovers active model from legacy tenant_models.json."""
+        """ProviderManager only reads providers/active_model.json."""
         import json
         from swe.tenant_models.manager import TenantModelManager
 
@@ -916,21 +909,12 @@ class TestLegacyTenantModelsRecovery:
         # Initialize ProviderManager for this tenant
         manager = ProviderManager(tenant_id=tenant_id)
 
-        # Active model should be recovered from legacy config
-        assert manager.active_model is not None
-        assert manager.active_model.provider_id == "test-openai"
-        assert manager.active_model.model == "gpt-4"
+        assert manager.active_model is None
 
-        # Verify active_model.json was created
         active_model_file = (
             isolated_secret_dir / tenant_id / "providers" / "active_model.json"
         )
-        assert active_model_file.exists()
-
-        # Reload and verify it's read from new location (not legacy)
-        reloaded = ProviderManager(tenant_id=tenant_id)
-        assert reloaded.active_model.provider_id == "test-openai"
-        assert reloaded.active_model.model == "gpt-4"
+        assert not active_model_file.exists()
 
     def test_no_recovery_when_active_model_exists(
         self,
@@ -987,11 +971,11 @@ class TestLegacyTenantModelsRecovery:
         assert manager.active_model.provider_id == "existing-provider"
         assert manager.active_model.model == "existing-model"
 
-    def test_recovery_fallback_to_default_tenant(
+    def test_no_fallback_to_default_tenant_models(
         self,
         isolated_secret_dir,
     ) -> None:
-        """Recovery falls back to default tenant if tenant-specific config missing."""
+        """ProviderManager does not inherit default tenant_models.json."""
         import json
         from swe.tenant_models.manager import TenantModelManager
 
@@ -1039,15 +1023,10 @@ class TestLegacyTenantModelsRecovery:
         # Initialize ProviderManager for new tenant
         manager = ProviderManager(tenant_id=new_tenant_id)
 
-        # Should recover from default tenant's legacy config
-        # (local slot from local_first mode = ollama/llama3)
-        assert manager.active_model is not None
-        assert manager.active_model.provider_id == "ollama"
-        assert manager.active_model.model == "llama3"
+        assert manager.active_model is None
 
-        # Should save to new tenant's active_model.json
         new_active_file = provider_dir / "active_model.json"
-        assert new_active_file.exists()
+        assert not new_active_file.exists()
 
 
 class TestProviderManagerEnsureStorage:

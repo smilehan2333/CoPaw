@@ -187,6 +187,30 @@ def test_prompt_handler_default_fail_policy_is_block() -> None:
     assert handler.fail_policy == "block"
 
 
+def test_handler_conversation_snapshot_config_defaults_and_limit() -> None:
+    handler = _handler("audit", includeConversationSnapshot=True)
+
+    assert handler.include_conversation_snapshot is True
+    assert handler.conversation_snapshot_limit == 50
+
+    custom = _handler(
+        "audit-large",
+        includeConversationSnapshot=True,
+        conversationSnapshotLimit=200,
+    )
+
+    assert custom.conversation_snapshot_limit == 200
+
+
+def test_handler_conversation_snapshot_limit_is_bounded() -> None:
+    with pytest.raises(ValidationError):
+        _handler(
+            "too-large",
+            includeConversationSnapshot=True,
+            conversationSnapshotLimit=201,
+        )
+
+
 def test_before_stop_is_blockable_and_accepts_prompt_handlers() -> None:
     assert HookEventName.BEFORE_STOP.value == "BeforeStop"
     assert HookEventName.BEFORE_STOP in PROMPT_HANDLER_BLOCKABLE_EVENTS

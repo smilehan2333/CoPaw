@@ -1,0 +1,23 @@
+{
+  "enabled": true,
+  "events": {
+    "BeforeStop": [
+      {
+        "id": "full-history-final-output-gate",
+        "hooks": [
+          {
+            "id": "full-history-external-policy",
+            "type": "command",
+            "argv": [
+              "python",
+              "scripts/before_stop_history_http_guard.py"
+            ],
+            "timeout": 15,
+            "failPolicy": "block",
+            "statusMessage": "正在调用外部策略服务检查最终输出"
+          }
+        ]
+      }
+    ]
+  }
+}

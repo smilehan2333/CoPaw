@@ -33,6 +33,8 @@ const Tool = React.memo(function ({
     output_summary?: string;
     tool_status?: "running" | "success" | "failed";
     tool_error?: string | null;
+    live_output?: string;
+    live_output_truncated?: boolean;
   }>[];
   const inputData = (content[0]?.data || {}) as Record<string, any>;
   const outputData = (content[1]?.data || {}) as Record<string, any>;
@@ -51,8 +53,11 @@ const Tool = React.memo(function ({
   const defaultTitle = getToolDisplayName(toolName, serverLabel);
   const input = inputData.arguments ?? outputData.arguments;
   const summary = inputData.summary ?? outputData.summary;
-  const output = outputData.output ?? inputData.output;
-  const outputSummary = outputData.output_summary ?? inputData.output_summary;
+  const output = outputData.output ?? inputData.live_output ?? inputData.output;
+  const outputSummary =
+    outputData.output_summary ??
+    inputData.output_summary ??
+    (inputData.live_output_truncated ? "早期实时输出已省略" : undefined);
   const title = buildToolTitle({
     loading,
     toolName,

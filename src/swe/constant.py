@@ -191,10 +191,6 @@ MAX_LOAD_HISTORY_COUNT = 10000
 
 # Env key for app log level (used by CLI and app load for reload child).
 LOG_LEVEL_ENV = "SWE_LOG_LEVEL"
-FILE_LOG_ENABLED = EnvVarLoader.get_bool(
-    "SWE_FILE_LOG_ENABLED",
-    False,
-)
 
 # Env to indicate running inside a container (e.g. Docker). Set to 1/true/yes.
 RUNNING_IN_CONTAINER = EnvVarLoader.get_bool(
@@ -433,12 +429,12 @@ CHANNEL_CONSUME_TIMEOUT = EnvVarLoader.get_float(
 try:
     TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS = max(
         float(
-            os.environ.get("SWE_TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS", "600"),
+            os.environ.get("SWE_TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS", "7200"),
         ),
         1.0,
     )
 except (TypeError, ValueError):
-    TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS = 600.0
+    TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS = 7200.0
 
 # Marker prepended to every truncation notice.
 # Format:

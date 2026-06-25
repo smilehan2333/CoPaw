@@ -84,7 +84,7 @@ describe("ChatTaskList actions", () => {
     expect(screen.queryByRole("link", { name: "去创建" })).toBeNull();
   });
 
-  it("opens stop, execute and delete actions from the overflow menu", async () => {
+  it("opens stop and execute actions from the enabled task overflow menu", async () => {
     const onTaskClick = vi.fn();
     const onTaskPause = vi.fn();
     const onTaskRun = vi.fn();
@@ -118,10 +118,65 @@ describe("ChatTaskList actions", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "更多任务操作：每日巡检" }),
     );
-    fireEvent.click(await screen.findByText("删除"));
+    await screen.findByText("停止");
+    expect(screen.queryByText("删除")).toBeNull();
 
     expect(onTaskPause).toHaveBeenCalledWith(task);
     expect(onTaskRun).toHaveBeenCalledWith(task);
+    expect(onTaskDelete).not.toHaveBeenCalled();
+    expect(onTaskClick).not.toHaveBeenCalled();
+  });
+
+  it("hides edit for enabled scheduled tasks", async () => {
+    const onTaskClick = vi.fn();
+    const onTaskEdit = vi.fn();
+    const task = taskJob();
+
+    render(
+      <ChatTaskList
+        tasks={[task]}
+        onTaskClick={onTaskClick}
+        onTaskEdit={onTaskEdit}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "更多任务操作：每日巡检" }),
+    );
+
+    await screen.findByText("停止");
+    expect(screen.queryByText("编辑")).toBeNull();
+
+    expect(onTaskEdit).not.toHaveBeenCalled();
+    expect(onTaskClick).not.toHaveBeenCalled();
+  });
+
+  it("opens edit and delete for a stopped task without selecting the task", async () => {
+    const onTaskClick = vi.fn();
+    const onTaskEdit = vi.fn();
+    const onTaskDelete = vi.fn();
+    const task = taskJob({ enabled: false });
+
+    render(
+      <ChatTaskList
+        tasks={[task]}
+        onTaskClick={onTaskClick}
+        onTaskEdit={onTaskEdit}
+        onTaskDelete={onTaskDelete}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "更多任务操作：每日巡检" }),
+    );
+    fireEvent.click(await screen.findByText("编辑"));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "更多任务操作：每日巡检" }),
+    );
+    fireEvent.click(await screen.findByText("删除"));
+
+    expect(onTaskEdit).toHaveBeenCalledWith(task);
     expect(onTaskDelete).toHaveBeenCalledWith(task);
     expect(onTaskClick).not.toHaveBeenCalled();
   });

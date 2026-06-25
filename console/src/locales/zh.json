@@ -67,6 +67,7 @@
     "analyticsBusinessOverview": "运营看板",
     "analyticsClawDataOverview": "claw数据看板",
     "analyticsCronJobOverview": "定时任务概览",
+    "analyticsContinuousGovernance": "质量工程看板",
     "instance": "实例管理",
     "instanceOverview": "概览",
     "instanceInstances": "实例列表",
@@ -1696,7 +1697,13 @@
       "deleteFailed": "删除失败",
       "noFiles": "暂无备份文件",
       "previewTitle": "文件预览",
-      "previewFailed": "获取文件内容失败"
+      "previewFailed": "获取文件内容失败",
+      "task": "治理任务",
+      "taskTitle": "治理任务 {{recordId}}",
+      "unlinkedTask": "未关联治理任务",
+      "fileCount": "{{count}} 个备份文件",
+      "rollbackTaskConfirm": "确定要按本次治理任务回退全部文件吗？",
+      "rollbackFileConfirm": "确定要回退这个文件吗？"
     },
     "file": {
       "filename": "文件名",

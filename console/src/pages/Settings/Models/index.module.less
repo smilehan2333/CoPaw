@@ -1183,15 +1183,26 @@
 }
 
 .pageHeading {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
   min-height: 48px;
-  padding: 12px 28px 4px;
+  padding: 12px 28px 16px;
   box-sizing: border-box;
   background: transparent;
   border-bottom: 0;
+
+  &::after {
+    content: "";
+    position: absolute;
+    right: 28px;
+    bottom: 0;
+    left: 28px;
+    height: 1px;
+    background: #eef1f5;
+  }
 }
 
 .pageHeadingIcon {

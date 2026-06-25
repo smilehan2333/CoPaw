@@ -2,7 +2,6 @@
 """Daemon command execution layer and DaemonCommandHandlerMixin.
 
 Shared by in-chat /daemon <sub> and CLI `swe daemon <sub>`.
-Logs: read file-backed WORKING_DIR / "swe.log" when file logging is enabled.
 Restart: in-process reload of channels, cron and MCP (no process exit);
 works on Mac/Windows without a process manager.
 """
@@ -17,7 +16,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from agentscope.message import Msg, TextBlock
 
-from ...constant import FILE_LOG_ENABLED, WORKING_DIR
+from ...constant import WORKING_DIR
 from ...config import load_config
 
 if TYPE_CHECKING:
@@ -32,7 +31,7 @@ class RestartInProgressError(Exception):
 
 DAEMON_PREFIX = "/daemon"
 DAEMON_SUBCOMMANDS = frozenset(
-    {"status", "restart", "reload-config", "version", "logs", "approve"},
+    {"status", "restart", "reload-config", "version", "approve"},
 )
 # Short names: /restart -> /daemon restart, etc.
 DAEMON_SHORT_ALIASES = {
@@ -41,7 +40,6 @@ DAEMON_SHORT_ALIASES = {
     "reload-config": "reload-config",
     "reload_config": "reload-config",
     "version": "version",
-    "logs": "logs",
     "approve": "approve",
 }
 
@@ -59,56 +57,6 @@ class DaemonContext:
     tenant_id: Optional[str] = None
     # Session ID for approval commands.
     session_id: str = ""
-
-
-def _get_last_lines(
-    path: Path,
-    lines: int = 100,
-    max_bytes: int = 512 * 1024,
-) -> str:
-    """Read last N lines from a text file (tail) with bounded memory.
-
-    Reads at most max_bytes from the end of the file so large logs
-    do not cause high memory usage or latency.
-    """
-    path = Path(path)
-    if not path.exists() or not path.is_file():
-        return f"(Log file not found: {path})"
-    try:
-        size = path.stat().st_size
-        if size == 0:
-            return "(empty)"
-        with open(path, "rb") as f:
-            if size <= max_bytes:
-                content = f.read().decode("utf-8", errors="replace")
-            else:
-                f.seek(size - max_bytes)
-                content = f.read().decode("utf-8", errors="replace")
-                first_nl = content.find("\n")
-                if first_nl != -1:
-                    content = content[first_nl + 1 :]
-                else:
-                    content = ""
-        all_lines = content.splitlines()
-        last = all_lines[-lines:] if len(all_lines) > lines else all_lines
-        return "\n".join(last) if last else "(empty)"
-    except OSError as e:
-        return f"(Error reading log: {e})"
-
-
-def _get_log_path(working_dir: Path) -> Path:
-    """返回 daemon 文件日志路径。"""
-    return Path(working_dir) / "swe.log"
-
-
-def _has_file_log(working_dir: Path) -> bool:
-    """按日志文件实际存在性判断文件日志是否可读取。"""
-    return _get_log_path(working_dir).is_file()
-
-
-def _should_use_file_log(working_dir: Path) -> bool:
-    """优先使用实际存在的日志文件，并兼容当前进程显式开启的场景。"""
-    return _has_file_log(working_dir) or FILE_LOG_ENABLED
 
 
 def run_daemon_status(context: DaemonContext) -> str:
@@ -187,35 +135,11 @@ def run_daemon_version(context: DaemonContext) -> str:
         from ...__version__ import __version__ as ver
     except ImportError:
         ver = "unknown"
-    if _should_use_file_log(context.working_dir):
-        log_file = str(_get_log_path(context.working_dir))
-    else:
-        log_file = "disabled (SWE_FILE_LOG_ENABLED=false)"
     return (
         f"**Daemon version**\n\n"
         f"- Version: {ver}\n"
-        f"- Working dir: {context.working_dir}\n"
-        f"- Log file: {log_file}"
+        f"- Working dir: {context.working_dir}"
     )
-
-
-def run_daemon_logs(
-    lines: int = 100,
-    context: DaemonContext | None = None,
-) -> str:
-    """Tail last N lines from WORKING_DIR / swe.log."""
-    daemon_context = context or DaemonContext()
-    if not _should_use_file_log(daemon_context.working_dir):
-        return (
-            "**File log unavailable**\n\n"
-            "- This command reads the file-backed swe.log only.\n"
-            "- File logging is disabled "
-            "(SWE_FILE_LOG_ENABLED=false).\n"
-            "- Check the app process stdout/stderr output instead."
-        )
-    log_path = _get_log_path(daemon_context.working_dir)
-    content = _get_last_lines(log_path, lines=lines)
-    return f"**File log (last {lines} lines)**\n\n```\n{content}\n```"
 
 
 async def run_daemon_approve(
@@ -238,11 +162,9 @@ async def run_daemon_approve(
         pending = await svc.get_pending_by_session(session_id)
         if pending is None:
             return (
-                "**No pending approval**\n\n"
-                "- There is no tool-guard approval waiting for this "
-                "session.\n"
-                "- This command is only valid when a sensitive tool "
-                "call is awaiting your review."
+                "**没有待审批请求**\n\n"
+                "- 当前会话没有等待处理的工具审批。\n"
+                "- 该命令仅在敏感工具调用等待你审核时有效。"
             )
         await svc.resolve_request(
             pending.request_id,
@@ -288,7 +210,7 @@ def parse_daemon_query(query: str) -> Optional[tuple[str, list[str]]]:
 
 
 class DaemonCommandHandlerMixin:
-    """Mixin for daemon commands: /daemon status, restart, logs, etc."""
+    """Mixin for daemon commands: /daemon status, restart, etc."""
 
     def is_daemon_command(self, query: str | None) -> bool:
         """True if query is /daemon <sub> or short name (/restart, etc.)."""
@@ -318,13 +240,6 @@ class DaemonCommandHandlerMixin:
             text = run_daemon_reload_config(context)
         elif sub == "version":
             text = run_daemon_version(context)
-        elif sub == "logs":
-            n = 100
-            for a in args:
-                if a.isdigit():
-                    n = max(1, min(int(a), 2000))
-                    break
-            text = run_daemon_logs(lines=n, context=context)
         elif sub == "approve":
             session_id = getattr(context, "session_id", "") or ""
             text = await run_daemon_approve(context, session_id=session_id)

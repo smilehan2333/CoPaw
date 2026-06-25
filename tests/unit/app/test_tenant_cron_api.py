@@ -4,6 +4,7 @@
 import asyncio
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -1106,6 +1107,8 @@ def test_broadcast_updates_existing_child_job_definition():
                 cron="30 10 * * *",
             ).model_dump(mode="json"),
             "tenant_id": "tenant-a",
+            "tenant_name": "Alice",
+            "bbk_id": "1001",
             "source_id": "source-a",
             "scope_id": encode_scope_id("tenant-a", "source-a"),
             "request": CronJobRequest(
@@ -1196,6 +1199,11 @@ def test_broadcast_updates_existing_child_job_definition():
     assert updated.schedule.cron == "30 10 * * *"
     assert updated.runtime.timeout_seconds == 456
     assert updated.meta["notification_delay_minutes"] == 60
+    assert updated.meta["broadcast_source_job_id"] == "job-source"
+    assert updated.meta["broadcast_source_job_name"] == "tenant cron"
+    assert updated.meta["broadcast_source_tenant_id"] == "tenant-a"
+    assert updated.meta["broadcast_source_tenant_name"] == "Alice"
+    assert updated.meta["broadcast_source_bbk_id"] == "1001"
     assert updated.meta["task_chat_id"] == "chat-child"
     assert updated.meta["task_session_id"] == "session-child"
     assert updated.meta["pause_reason"] == "manual"
@@ -1247,7 +1255,14 @@ def test_list_broadcast_children_returns_empty_for_undistributed_job(
     response = client.get("/cron/jobs/job-source/broadcast/children")
 
     assert response.status_code == 200
-    assert response.json() == {"items": []}
+    assert response.json() == {
+        "items": [],
+        "status": "idle",
+        "tenant_count": 0,
+        "failed_tenants": 0,
+        "failure_summary": None,
+        "updated_at": None,
+    }
 
 
 def test_list_broadcast_children_returns_matching_target_jobs(monkeypatch):
@@ -1309,7 +1324,22 @@ def test_list_broadcast_children_returns_matching_target_jobs(monkeypatch):
     response = client.get("/cron/jobs/job-source/broadcast/children")
 
     assert response.status_code == 200
-    assert response.json()["items"] == [
+    assert response.json()["status"] == "idle"
+
+    refresh_response = client.post(
+        "/cron/jobs/job-source/broadcast/children/refresh",
+    )
+
+    assert refresh_response.status_code == 200
+    assert refresh_response.json()["status"] == "running"
+    assert refresh_response.json()["reused"] is False
+
+    payload = _wait_for_broadcast_children_refresh(client, "job-source")
+    assert payload["status"] == "completed"
+    assert payload["tenant_count"] == 2
+    assert payload["failed_tenants"] == 0
+    assert payload["updated_at"]
+    assert payload["items"] == [
         {
             "tenant_id": "tenant-b",
             "tenant_name": "Bob",
@@ -1325,6 +1355,72 @@ def test_list_broadcast_children_returns_matching_target_jobs(monkeypatch):
             "last_error": None,
         },
     ]
+
+
+def _wait_for_broadcast_children_refresh(client: TestClient, job_id: str):
+    for _ in range(50):
+        response = client.get(f"/cron/jobs/{job_id}/broadcast/children")
+        payload = response.json()
+        if payload["status"] != "running":
+            return payload
+        time.sleep(0.01)
+    return payload
+
+
+def test_schedule_broadcast_children_refresh_reuses_running_task(monkeypatch):
+    calls = []
+
+    async def _refresh_snapshot(store, parts, context, tenant_ids):
+        del store, context, tenant_ids
+        calls.append(parts["job_id"])
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(
+        api_module,
+        "_refresh_broadcast_children_snapshot",
+        _refresh_snapshot,
+    )
+    source_job = CronJobSpec.model_validate(
+        {
+            **_job_spec("job-source"),
+            "tenant_id": "tenant-a",
+            "source_id": "source-a",
+            "scope_id": encode_scope_id("tenant-a", "source-a"),
+        },
+    )
+
+    async def _run():
+        request = types.SimpleNamespace(
+            app=types.SimpleNamespace(state=types.SimpleNamespace()),
+            state=types.SimpleNamespace(
+                agent_id="default",
+                source_id="source-a",
+                tenant_id="tenant-a",
+            ),
+        )
+        context = types.SimpleNamespace(source_job=source_job)
+        first = await api_module._schedule_broadcast_children_refresh(
+            request,
+            source_job,
+            context,
+            ["tenant-b"],
+        )
+        second = await api_module._schedule_broadcast_children_refresh(
+            request,
+            source_job,
+            context,
+            ["tenant-b"],
+        )
+        await asyncio.gather(
+            *api_module._get_broadcast_children_tasks(request).values(),
+        )
+        return first, second
+
+    first, second = asyncio.run(_run())
+
+    assert first[1] is False
+    assert second[1] is True
+    assert calls == ["job-source"]
 
 
 def test_batch_delete_broadcast_children_validates_source(monkeypatch):

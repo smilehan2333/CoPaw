@@ -47,13 +47,21 @@ function taskJob(
 }
 
 describe("getTaskSidebarMeta", () => {
-  it("allows stopping, executing and deleting active scheduled tasks", () => {
+  it("allows stopping and executing active scheduled tasks without destructive actions", () => {
     const meta = getTaskSidebarMeta(taskJob());
 
     expect(meta.state).toBe("active");
     expect(meta.canPause).toBe(true);
     expect(meta.canRun).toBe(true);
     expect(meta.canResume).toBe(false);
+    expect(meta.canDelete).toBe(false);
+    expect(meta.canEdit).toBe(false);
+  });
+
+  it("allows editing and deleting only when the scheduled task is disabled", () => {
+    const meta = getTaskSidebarMeta(taskJob({ enabled: false }));
+
+    expect(meta.canEdit).toBe(true);
     expect(meta.canDelete).toBe(true);
   });
 
@@ -78,6 +86,7 @@ describe("getTaskSidebarMeta", () => {
     expect(meta.canRun).toBe(false);
     expect(meta.canResume).toBe(true);
     expect(meta.canDelete).toBe(true);
+    expect(meta.canEdit).toBe(true);
   });
 
   it("hides mutation actions while a task is running", () => {
@@ -100,6 +109,7 @@ describe("getTaskSidebarMeta", () => {
     expect(meta.canRun).toBe(false);
     expect(meta.canResume).toBe(false);
     expect(meta.canDelete).toBe(false);
+    expect(meta.canEdit).toBe(false);
   });
 });
 

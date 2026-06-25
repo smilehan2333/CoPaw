@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ...constant import TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS
 from ...security.tool_guard.approval import ApprovalDecision
 
 if TYPE_CHECKING:
@@ -24,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 _GC_MAX_AGE_SECONDS = 3600.0
 _GC_MAX_COMPLETED = 500
-_GC_PENDING_MAX_AGE_SECONDS = 1800.0
+_GC_PENDING_MAX_AGE_SECONDS = max(
+    1800.0,
+    TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS,
+)
 _GC_MAX_PENDING = 200
 
 

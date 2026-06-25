@@ -855,6 +855,12 @@ html.dark-mode .swe-sender-content {
   /* #EAE9E7 */
 }
 
+.page-container--with-sidebar > .page-content {
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
 .table-container {
   height: 100%;
   overflow: hidden;

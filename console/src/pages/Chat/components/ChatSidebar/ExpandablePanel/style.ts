@@ -297,13 +297,6 @@ export default createGlobalStyle`
   justify-content: flex-end;
   gap: 4px;
   flex: 0 0 auto;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-}
-
-.expandable-panel-task-card:hover .expandable-panel-task-actions,
-.expandable-panel-task-card:focus-within .expandable-panel-task-actions {
   opacity: 1;
   pointer-events: auto;
 }

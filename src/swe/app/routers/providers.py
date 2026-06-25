@@ -86,17 +86,67 @@ def get_provider_manager(request: Request) -> ProviderManager:
     )
     cache_hit_before = provider_tenant_id in ProviderManager._instances
     root_path = ProviderManager._get_tenant_root_path(provider_tenant_id)
+    logger.info(
+        "provider_manager_dependency_start path=%s route_tenant_id=%s "
+        "provider_tenant_id=%s source_id=%s scope_id=%s cache_hit_before=%s "
+        "root_path=%s",
+        request.url.path,
+        tenant_id,
+        provider_tenant_id,
+        _request_source_id(request),
+        getattr(request.state, "scope_id", None),
+        cache_hit_before,
+        root_path,
+    )
 
     # Ensure tenant provider storage exists before accessing ProviderManager
     ensure_started_at = time.perf_counter()
+    logger.info(
+        "provider_storage_ensure_start path=%s route_tenant_id=%s "
+        "provider_tenant_id=%s root_path=%s",
+        request.url.path,
+        tenant_id,
+        provider_tenant_id,
+        root_path,
+    )
     ProviderManager.ensure_tenant_provider_storage(tenant_id)
     ensure_ms = int((time.perf_counter() - ensure_started_at) * 1000)
+    logger.info(
+        "provider_storage_ensure_done path=%s route_tenant_id=%s "
+        "provider_tenant_id=%s duration_ms=%d root_path=%s",
+        request.url.path,
+        tenant_id,
+        provider_tenant_id,
+        ensure_ms,
+        root_path,
+    )
 
     # Return tenant-specific provider manager
     get_instance_started_at = time.perf_counter()
+    logger.info(
+        "provider_manager_get_instance_start path=%s route_tenant_id=%s "
+        "provider_tenant_id=%s cache_hit_before=%s root_path=%s",
+        request.url.path,
+        tenant_id,
+        provider_tenant_id,
+        cache_hit_before,
+        root_path,
+    )
     manager = ProviderManager.get_instance(tenant_id)
     get_instance_ms = int(
         (time.perf_counter() - get_instance_started_at) * 1000,
+    )
+    logger.info(
+        "provider_manager_get_instance_done path=%s route_tenant_id=%s "
+        "provider_tenant_id=%s manager_tenant_id=%s duration_ms=%d "
+        "cache_hit_after=%s root_path=%s",
+        request.url.path,
+        tenant_id,
+        provider_tenant_id,
+        manager.tenant_id,
+        get_instance_ms,
+        manager.tenant_id in ProviderManager._instances,
+        root_path,
     )
     total_ms = int((time.perf_counter() - started_at) * 1000)
 
@@ -755,8 +805,7 @@ async def remove_model_endpoint(
     summary="Get effective active LLM",
 )
 async def get_active_models(
-    _request: Request,  # Kept for API signature compatibility
-    manager: ProviderManager = Depends(get_provider_manager),
+    request: Request,
     scope: ActiveModelReadScope = Query(default="effective"),
     _agent_id: Optional[str] = Query(default=None),  # Deprecated
 ) -> ActiveModelsInfo:
@@ -779,18 +828,25 @@ async def get_active_models(
 
     # For 'effective' and 'global', return the tenant-level active model
     # Agent-level model fallback is removed as models are now tenant-scoped
-    global_model = manager.get_active_model()
+    tenant_id = _get_effective_tenant_id(request) or "default"
+    ProviderManager.ensure_tenant_provider_storage(tenant_id)
+    provider_tenant_id = ProviderManager._resolve_effective_provider_tenant_id(
+        tenant_id,
+    )
+    root_path = ProviderManager._get_tenant_root_path(provider_tenant_id)
+    global_model = ProviderManager._read_active_model_from_root(
+        root_path,
+    )
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     if duration_ms >= _PROVIDER_API_SLOW_LOG_MS:
         logger.info(
             "provider_active_model_read_slow tenant_id=%s duration_ms=%d "
             "scope=%s root_path=%s",
-            manager.tenant_id,
+            provider_tenant_id,
             duration_ms,
             scope,
-            manager.root_path,
+            root_path,
         )
-    logger.info("Returning tenant-level active model: %s", global_model)
     return ActiveModelsInfo(active_llm=global_model)
 
 

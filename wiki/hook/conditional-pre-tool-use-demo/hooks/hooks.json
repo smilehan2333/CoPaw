@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "events": {
+    "PreToolUse": [
+      {
+        "id": "conditional-shell-policy",
+        "matcher": {
+          "tools": ["execute_shell_command"]
+        },
+        "hooks": [
+          {
+            "id": "conditional-shell-check",
+            "type": "command",
+            "argv": [
+              "python",
+              "scripts/check_conditional_shell.py"
+            ],
+            "if": "tool_name == 'execute_shell_command' and ('curl' in tool_input['command'] or 'rm -rf' in tool_input['command'])",
+            "timeout": 5,
+            "statusMessage": "正在检查命中的高风险 shell 命令",
+            "failPolicy": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -2,6 +2,7 @@ import React from "react";
 import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import useChatController from "./useChatController";
+import type { IAgentScopeRuntimeWebUIInputData } from "@/components/agentscope-chat";
 import type { CurrentQARef } from "./currentQARef";
 import type { ChatRequestOwner } from "./requestOwnership";
 
@@ -39,14 +40,26 @@ let latestRequestOptions:
   | undefined;
 let latestController:
   | {
-      handleSubmit: (data: { query: string; fileList?: unknown[] }) => Promise<void>;
+      handleSubmit: (data: IAgentScopeRuntimeWebUIInputData) => void;
       handleCancel: () => void;
     }
   | undefined;
 
+function hasMockReset(value: unknown): value is { mockReset: () => void } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "mockReset" in value &&
+    typeof (value as { mockReset?: unknown }).mockReset === "function"
+  );
+}
+
 vi.mock("use-context-selector", () => ({
   createContext: vi.fn(() => ({})),
-  useContextSelector: (context: unknown, selector: (value: unknown) => unknown) => {
+  useContextSelector: (
+    context: unknown,
+    selector: (value: unknown) => unknown,
+  ) => {
     if (context === mocks.inputContext) {
       return selector({
         setLoading: mocks.setLoading,
@@ -96,23 +109,25 @@ vi.mock("./useChatMessageHandler", () => ({
       getHistoryMessages: mocks.getHistoryMessages,
       createRequestMessage: mocks.createRequestMessage,
       createApprovalMessage: mocks.createApprovalMessage,
-      createResponseMessage: mocks.createResponseMessage.mockImplementation(() => {
-        currentQARef.current.response = {
-          id: "response-a",
-          msgStatus: "generating",
-          cards: [
-            {
-              code: "AgentScopeRuntimeResponseCard",
-              data: {
-                id: "response-a",
-                status: "created",
-                created_at: 0,
-                output: [],
+      createResponseMessage: mocks.createResponseMessage.mockImplementation(
+        () => {
+          currentQARef.current.response = {
+            id: "response-a",
+            msgStatus: "generating",
+            cards: [
+              {
+                code: "AgentScopeRuntimeResponseCard",
+                data: {
+                  id: "response-a",
+                  status: "created",
+                  created_at: 0,
+                  output: [],
+                },
               },
-            },
-          ],
-        };
-      }),
+            ],
+          };
+        },
+      ),
       removeMessageById: mocks.removeMessageById,
     };
   },
@@ -167,7 +182,7 @@ function Harness() {
 describe("useChatController", () => {
   beforeEach(() => {
     Object.values(mocks).forEach((value) => {
-      if ("mockReset" in value && typeof value.mockReset === "function") {
+      if (hasMockReset(value)) {
         value.mockReset();
       }
     });
@@ -239,12 +254,36 @@ describe("useChatController", () => {
           "chat-b",
           [{ id: "message-1" }],
           true,
+          { refreshList: false },
         ),
       );
 
       releaseSleep?.();
       await submitPromise;
     });
+  });
+
+  it("keeps first-turn local session updates out of the chat list refresh path", async () => {
+    render(<Harness />);
+
+    await act(async () => {
+      await latestController!.handleSubmit({
+        query: "hello",
+        fileList: [],
+      });
+    });
+
+    expect(mocks.updateSessionName).toHaveBeenCalledWith(
+      "hello",
+      [{ id: "message-1" }],
+      { refreshList: false },
+    );
+    expect(mocks.syncSessionMessagesForSession).toHaveBeenCalledWith(
+      "chat-b",
+      [{ id: "message-1" }],
+      true,
+      { refreshList: false },
+    );
   });
 
   it("cancels the active backend request when the user stops a response", async () => {

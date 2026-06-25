@@ -128,13 +128,6 @@ export default createGlobalStyle`
     justify-content: flex-end;
     gap: 4px;
     flex: 0 0 auto;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
-  }
-
-  &-item:hover &-item-actions,
-  &-item:focus-within &-item-actions {
     opacity: 1;
     pointer-events: auto;
   }

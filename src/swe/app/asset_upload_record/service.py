@@ -39,6 +39,7 @@ class AssetUploadRecordService:
         file_size: int,
         asset_path: str,
         source_id: Optional[str] = None,
+        template_flag: Optional[str] = None,
     ) -> Optional[int]:
         """创建上传记录，写库失败时记录警告但不抛异常。"""
         try:
@@ -47,6 +48,7 @@ class AssetUploadRecordService:
                 file_size=file_size,
                 asset_path=asset_path,
                 source_id=source_id,
+                template_flag=template_flag,
             )
         except Exception:
             logger.warning(
@@ -81,7 +83,11 @@ class AssetUploadRecordService:
         """查询所有上传文件名。"""
         rows = await self._store.list_all_file_names()
         data = [
-            TemplateItem(templateId=row["id"], templateName=row["file_name"])
+            TemplateItem(
+                templateId=row["id"],
+                templateName=row["file_name"],
+                templateFlag=row.get("template_flag"),
+            )
             for row in rows
         ]
         return AssetUploadFileNameList(data=data)

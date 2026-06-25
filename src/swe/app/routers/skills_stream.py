@@ -7,23 +7,26 @@ Streaming AI skill optimization API
 import json
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ...agents.model_factory import create_model_and_formatter
+from ...tracing import capture_current_trace_context
 
 logger = logging.getLogger(__name__)
 
 
-def get_model():
+def get_model(trace_context=None):
     """Get the active chat model instance.
 
     Returns:
         Chat model instance or None if not configured
     """
     try:
-        model, _ = create_model_and_formatter()
+        model, _ = create_model_and_formatter(
+            trace_context=trace_context,
+        )
         return model
     except Exception as e:
         logger.warning("Failed to get model: %s", e)
@@ -164,7 +167,10 @@ def _extract_text_from_response(response) -> str:
 
 
 @router.post("/skills/ai/optimize/stream")
-async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
+async def ai_optimize_skill_stream(
+    body: AIOptimizeSkillRequest,
+    _request: Request,
+):
     """Use AI to optimize an existing skill with streaming response.
 
     Args:
@@ -176,7 +182,9 @@ async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
 
     async def generate():
         try:
-            model = get_model()
+            model = get_model(
+                trace_context=capture_current_trace_context(),
+            )
             if not model:
                 error_msg = json.dumps(
                     {
@@ -190,13 +198,13 @@ async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
                 return
 
             system_prompt = SYSTEM_PROMPTS.get(
-                request.language,
+                body.language,
                 SYSTEM_PROMPTS["en"],
             )
 
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": request.content},
+                {"role": "user", "content": body.content},
             ]
 
             response = await model(messages)

@@ -32,7 +32,7 @@ export function SkillCard({ skill, onClick, onDistribute, onLookupOwners, onUnpu
           label: (
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Users size={14} />
-              查看拥有用户
+              用户可执行性
             </span>
           ),
           onClick: onLookupOwners,

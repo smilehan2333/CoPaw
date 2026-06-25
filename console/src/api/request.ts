@@ -48,9 +48,14 @@ function buildHeaders(
 ): Headers {
   // 统一转为 Headers，保证后续读取和写入行为一致。
   const headers = extra instanceof Headers ? extra : new Headers(extra);
+  const hasBody = body !== undefined && body !== null;
 
   // 仅对通常携带请求体的方法补默认 Content-Type。
-  if (method && ["POST", "PUT", "PATCH"].includes(method.toUpperCase())) {
+  if (
+    method &&
+    hasBody &&
+    ["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())
+  ) {
     // FormData 需要浏览器自动生成 multipart boundary，不能强行写死 Content-Type。
     if (!headers.has("Content-Type") && !(body instanceof FormData)) {
       headers.set("Content-Type", "application/json");

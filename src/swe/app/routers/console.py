@@ -339,6 +339,53 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w.\-]", "_", base)[:200] or "file"
 
 
+def _extract_content_parts_from_mapping(request_data: dict) -> list[Any]:
+    """从 dict 形态请求中提取完整 content parts。"""
+    input_data = request_data.get("input", [])
+    content_parts: list[Any] = []
+    for content_part in input_data:
+        if hasattr(content_part, "content"):
+            content_parts.extend(list(content_part.content or []))
+            continue
+        if isinstance(content_part, dict) and "content" in content_part:
+            content_parts.extend(content_part.get("content") or [])
+    return content_parts
+
+
+def _extract_payload_fields_from_request(
+    request_data: AgentRequest,
+) -> tuple[str, str, str, Any, Any, Any, Any, list[Any]]:
+    """提取 AgentRequest 形态请求的核心字段。"""
+    channel_meta = getattr(request_data, "channel_meta", None) or {}
+    return (
+        getattr(request_data, "channel", None) or "console",
+        request_data.user_id or "default",
+        request_data.session_id or "default",
+        getattr(request_data, "user_name", None)
+        or channel_meta.get("user_name"),
+        getattr(request_data, "bbk_id", None) or channel_meta.get("bbk_id"),
+        getattr(request_data, "system_prompt_injections", None),
+        getattr(request_data, "file_url_network", None),
+        list(request_data.input[0].content) if request_data.input else [],
+    )
+
+
+def _extract_payload_fields_from_mapping(
+    request_data: dict,
+) -> tuple[str, str, str, Any, Any, Any, Any, list[Any]]:
+    """提取 dict 形态请求的核心字段。"""
+    return (
+        request_data.get("channel", "console"),
+        request_data.get("user_id", "default"),
+        request_data.get("session_id", "default"),
+        request_data.get("user_name"),
+        request_data.get("bbk_id"),
+        request_data.get("system_prompt_injections"),
+        request_data.get("file_url_network"),
+        _extract_content_parts_from_mapping(request_data),
+    )
+
+
 def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
     """Extract run_key (ChatSpec.id), session_id, and native payload.
 
@@ -348,36 +395,27 @@ def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
     run_key must be ChatSpec.id (chat_id) so it matches list_chats/get_chat.
     """
     if isinstance(request_data, AgentRequest):
-        channel_id = getattr(request_data, "channel", None) or "console"
-        sender_id = request_data.user_id or "default"
-        session_id = request_data.session_id or "default"
-        system_prompt_injections = getattr(
-            request_data,
-            "system_prompt_injections",
-            None,
-        )
-        file_url_network = getattr(request_data, "file_url_network", None)
-        content_parts = (
-            list(request_data.input[0].content) if request_data.input else []
-        )
-
+        (
+            channel_id,
+            sender_id,
+            session_id,
+            user_name,
+            bbk_id,
+            system_prompt_injections,
+            file_url_network,
+            content_parts,
+        ) = _extract_payload_fields_from_request(request_data)
     else:
-        channel_id = request_data.get("channel", "console")
-        sender_id = request_data.get("user_id", "default")
-        session_id = request_data.get("session_id", "default")
-        system_prompt_injections = request_data.get(
-            "system_prompt_injections",
-        )
-        file_url_network = request_data.get("file_url_network")
-        input_data = request_data.get("input", [])
-
-        content_parts = []
-        for content_part in input_data:
-            # pydantic model (rare in this branch) or plain dict
-            if hasattr(content_part, "content"):
-                content_parts.extend(list(content_part.content or []))
-            elif isinstance(content_part, dict) and "content" in content_part:
-                content_parts.extend(content_part.get("content") or [])
+        (
+            channel_id,
+            sender_id,
+            session_id,
+            user_name,
+            bbk_id,
+            system_prompt_injections,
+            file_url_network,
+            content_parts,
+        ) = _extract_payload_fields_from_mapping(request_data)
 
     native_payload: dict[str, Any] = {
         "channel_id": channel_id,
@@ -394,6 +432,10 @@ def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
         ] = system_prompt_injections
     if file_url_network is not None:
         native_payload["meta"]["file_url_network"] = file_url_network
+    if user_name:
+        native_payload["meta"]["user_name"] = user_name
+    if bbk_id:
+        native_payload["meta"]["bbk_id"] = bbk_id
     return native_payload
 
 

@@ -3,6 +3,7 @@
 
 import asyncio
 import errno
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -257,6 +258,89 @@ async def test_end_trace_if_needed_clears_attached_trace_context(tmp_path):
 
     assert get_current_trace() is None
     mock_trace_manager.end_trace.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_query_trace_does_not_attach_stale_request_trace_id_by_default(
+    tmp_path,
+):
+    runner = AgentRunner(agent_id="test-agent", workspace_dir=tmp_path)
+    request = SimpleNamespace(
+        trace_id="trace-stale",
+        user_id="user-1",
+        session_id="session-1",
+        channel="console",
+        source_id="source-1",
+        channel_meta={},
+    )
+    start_trace = AsyncMock(return_value="trace-new")
+    trace_manager = SimpleNamespace(enabled=True, start_trace=start_trace)
+
+    with (
+        patch(
+            "src.swe.app.runner.runner.has_trace_manager",
+            return_value=True,
+        ),
+        patch(
+            "src.swe.app.runner.runner.get_trace_manager",
+            return_value=trace_manager,
+        ),
+        patch(
+            "src.swe.app.runner.runner.resolve_user_identity",
+            AsyncMock(
+                return_value=SimpleNamespace(user_name=None, bbk_id=None),
+            ),
+        ),
+    ):
+        trace_id = await runner._start_query_trace(request, [])
+
+    assert trace_id == "trace-new"
+    assert request.trace_id == "trace-new"
+    start_trace.assert_awaited_once()
+    kwargs = start_trace.await_args.kwargs
+    assert kwargs["trace_id"] is None
+    assert kwargs["attach_existing"] is False
+
+
+@pytest.mark.asyncio
+async def test_start_query_trace_allows_explicit_attach_existing_trace(
+    tmp_path,
+):
+    runner = AgentRunner(agent_id="test-agent", workspace_dir=tmp_path)
+    request = SimpleNamespace(
+        trace_id="trace-existing",
+        user_id="user-1",
+        session_id="session-1",
+        channel="console",
+        source_id="source-1",
+        channel_meta={"trace_attach_existing": True},
+    )
+    start_trace = AsyncMock(return_value="trace-existing")
+    trace_manager = SimpleNamespace(enabled=True, start_trace=start_trace)
+
+    with (
+        patch(
+            "src.swe.app.runner.runner.has_trace_manager",
+            return_value=True,
+        ),
+        patch(
+            "src.swe.app.runner.runner.get_trace_manager",
+            return_value=trace_manager,
+        ),
+        patch(
+            "src.swe.app.runner.runner.resolve_user_identity",
+            AsyncMock(
+                return_value=SimpleNamespace(user_name=None, bbk_id=None),
+            ),
+        ),
+    ):
+        trace_id = await runner._start_query_trace(request, [])
+
+    assert trace_id == "trace-existing"
+    start_trace.assert_awaited_once()
+    kwargs = start_trace.await_args.kwargs
+    assert kwargs["trace_id"] == "trace-existing"
+    assert kwargs["attach_existing"] is True
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import {
   buildCronJobFormValues,
   buildCronJobSubmitPayload,
   getBroadcastResultMessage,
+  normalizeSkillIdsInput,
 } from "./helpers";
 
 function buildCronJob(
@@ -97,6 +98,37 @@ describe("CronJobs helpers", () => {
     });
     expect(result.meta?.notification_delay_minutes).toBe(120);
     expect(result.request?.input).toEqual([{ role: "user", content: [] }]);
+  });
+
+  it("normalizes manually entered skill ids before submit", () => {
+    expect(normalizeSkillIdsInput("a, b\nc a")).toBe("a,b,c");
+  });
+
+  it("rejects invalid skill id characters", () => {
+    expect(() => normalizeSkillIdsInput("bad/id")).toThrow();
+  });
+
+  it("rejects skill ids beyond the API length limit", () => {
+    expect(() => normalizeSkillIdsInput("x".repeat(201))).toThrow();
+  });
+
+  it("maps form skillIds to API skill_ids in submit payload", () => {
+    const result = buildCronJobSubmitPayload({
+      ...buildCronJob(),
+      skillIds: "a b",
+    });
+
+    expect(result.skill_ids).toBe("a,b");
+  });
+
+  it("hydrates API skill_ids into form skillIds when editing", () => {
+    const result = buildCronJobFormValues(
+      buildCronJob({
+        skill_ids: "a,b",
+      }),
+    );
+
+    expect(result.skillIds).toBe("a,b");
   });
 
   it("clears model_slot for text jobs on submit", () => {

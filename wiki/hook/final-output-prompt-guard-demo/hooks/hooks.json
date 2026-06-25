@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "events": {
+    "BeforeStop": [
+      {
+        "id": "final-output-standard-gate",
+        "hooks": [
+          {
+            "id": "final-output-standard-judge",
+            "type": "prompt",
+            "timeout": 8,
+            "failPolicy": "block",
+            "prompt": "请只基于 HookContext JSON 中可见的 assistant_response、prompt、tool_name、tool_input、tool_response 和 error 判断 Agent 最终输出是否符合规范。规范：1. 必须直接回应用户请求；2. 如果声称已经修改、验证、测试或构建，必须能从当前上下文看到对应依据，或在回复里明确说明未验证；3. 必须列出关键完成项、验证结果和仍存在的限制或失败；4. 不得把缺失、失败或不确定的信息写成确定事实；5. 不得遗漏用户明确要求的最终输出内容。若 assistant_response 不符合规范，返回 {\"decision\":\"block\",\"reason\":\"用一句话说明缺少或违规的具体内容\"}；若符合规范，返回 {\"decision\":\"allow\",\"reason\":\"最终输出符合规范\"}。"
+          }
+        ]
+      }
+    ]
+  }
+}

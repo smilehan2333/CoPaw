@@ -308,6 +308,7 @@ class MonitorSyncClient:
             "source_id": self._get_or_empty(spec_dict, "source_id"),
             "enabled": self._get_or_default(spec_dict, "enabled", True),
             "task_type": self._get_or_default(spec_dict, "task_type", "agent"),
+            "skill_ids": self._get_or_empty(spec_dict, "skill_ids"),
             "text_content": self._get_or_empty(spec_dict, "text"),
             "request_input": self._build_request_input(spec_dict),
         }

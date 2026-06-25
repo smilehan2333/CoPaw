@@ -33,12 +33,14 @@ class MultiAgentManager:
         self,
         *,
         source_system_config_service: object | None = None,
+        continuous_governance_service: object | None = None,
     ):
         """Initialize multi-agent manager."""
         self.agents: Dict[str, Workspace] = {}
         self._lock = asyncio.Lock()
         self._cleanup_tasks: Set[asyncio.Task] = set()
         self._source_system_config_service = source_system_config_service
+        self._continuous_governance_service = continuous_governance_service
         logger.debug("MultiAgentManager initialized")
 
     def set_source_system_config_service(
@@ -47,6 +49,13 @@ class MultiAgentManager:
     ) -> None:
         """Update the source config service for future workspaces."""
         self._source_system_config_service = source_system_config_service
+
+    def set_continuous_governance_service(
+        self,
+        continuous_governance_service: object | None,
+    ) -> None:
+        """更新后续工作区使用的持续治理服务。"""
+        self._continuous_governance_service = continuous_governance_service
 
     @staticmethod
     def _cache_key(agent_id: str, tenant_id: Optional[str] = None) -> str:
@@ -112,7 +121,12 @@ class MultiAgentManager:
                 agent_id=agent_id,
                 workspace_dir=agent_ref.workspace_dir,
                 tenant_id=tenant_id,
-                source_system_config_service=self._source_system_config_service,
+                source_system_config_service=(
+                    self._source_system_config_service
+                ),
+                continuous_governance_service=(
+                    self._continuous_governance_service
+                ),
             )
 
             try:
@@ -314,7 +328,10 @@ class MultiAgentManager:
             agent_id=agent_id,
             workspace_dir=agent_ref.workspace_dir,
             tenant_id=tenant_id,
-            source_system_config_service=self._source_system_config_service,
+            source_system_config_service=(self._source_system_config_service),
+            continuous_governance_service=(
+                self._continuous_governance_service
+            ),
         )
 
         # Step 3.5: Set reusable components from old instance (if any)

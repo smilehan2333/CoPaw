@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable, Coroutine, Literal
 
 from .task_progress import TaskProgressPayload, clone_task_progress
+from .tool_output_frames import ToolOutputFrame, bind_tool_output_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -205,15 +206,28 @@ class TaskTracker:
             tracker_ref = weakref.ref(self)
 
             async def _producer() -> None:
+                async def _broadcast_sse(sse: str) -> None:
+                    tracker = tracker_ref()
+                    if tracker is None:
+                        return
+                    async with tracker.lock:
+                        run.buffer.append(sse)
+                        for q in run.queues:
+                            q.put_nowait(sse)
+
+                async def _emit_tool_output_frame(
+                    frame: ToolOutputFrame,
+                ) -> None:
+                    await _broadcast_sse(
+                        "data: "
+                        + json.dumps(frame, ensure_ascii=False)
+                        + "\n\n",
+                    )
+
                 try:
-                    async for sse in stream_fn(payload):
-                        tracker = tracker_ref()
-                        if tracker is None:
-                            return
-                        async with tracker.lock:
-                            run.buffer.append(sse)
-                            for q in run.queues:
-                                q.put_nowait(sse)
+                    with bind_tool_output_emitter(_emit_tool_output_frame):
+                        async for sse in stream_fn(payload):
+                            await _broadcast_sse(sse)
                 except asyncio.CancelledError:
                     logger.debug("run cancelled run_key=%s", run_key)
                 except Exception:
@@ -224,10 +238,7 @@ class TaskTracker:
                     )
                     tracker = tracker_ref()
                     if tracker is not None:
-                        async with tracker.lock:
-                            run.buffer.append(err_sse)
-                            for q in run.queues:
-                                q.put_nowait(err_sse)
+                        await _broadcast_sse(err_sse)
                 finally:
                     tracker = tracker_ref()
                     if tracker is not None:

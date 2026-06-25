@@ -29,6 +29,7 @@ import { marketMcpApi } from "./modules/marketMcp";
 import { feedbackApi } from "./modules/feedback";
 import { htmlPreviewEventsApi } from "./modules/htmlPreviewEvents";
 import { systemCheckApi } from "./modules/systemCheck";
+import { skillReadinessApi } from "./modules/skillReadiness";
 
 export const api = {
   // Root
@@ -104,6 +105,9 @@ export const api = {
 
   // System Check
   ...systemCheckApi,
+
+  // Skill Readiness
+  ...skillReadinessApi,
 };
 
 export default api;
@@ -114,3 +118,4 @@ export * from "./modules/market";
 export * from "./modules/mySkills";
 export * from "./modules/myMcp";
 export * from "./modules/marketMcp";
+export * from "./modules/skillReadiness";

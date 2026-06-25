@@ -300,6 +300,7 @@ class SyncService:
                     task_session_id = %s,
                     job_origin = %s,
                     subscription_key = %s,
+                    skill_ids = %s,
                     meta = %s,
                     status = %s,
                     pause_reason = %s,
@@ -330,6 +331,7 @@ class SyncService:
                     request.task_session_id,
                     request.job_origin,
                     request.subscription_key,
+                    request.skill_ids,
                     request.meta,
                     request.status,
                     request.pause_reason,
@@ -353,11 +355,11 @@ class SyncService:
                     timeout_seconds, max_concurrency, misfire_grace_seconds,
                     text_content, request_input,
                     creator_user_id, task_chat_id, task_session_id,
-                    job_origin, subscription_key,
+                    job_origin, subscription_key, skill_ids,
                     meta,
                     status, pause_reason, created_at, updated_at
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -384,6 +386,7 @@ class SyncService:
                     request.task_session_id,
                     request.job_origin,
                     request.subscription_key,
+                    request.skill_ids,
                     request.meta,
                     request.status,
                     request.pause_reason,

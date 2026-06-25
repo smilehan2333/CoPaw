@@ -224,6 +224,8 @@ class SkillInvocationDetector:
         self._skill_descriptions: dict[str, str] = (
             {}
         )  # skill_name -> description
+        self._skill_ids: dict[str, str] = {}  # skill_name -> skill_id
+        self._skill_cn_names: dict[str, str] = {}  # skill_name -> cn_name
         self._skill_activation_time: dict[str, datetime] = {}
         self._skill_call_history: dict[str, int] = {}
         self._idle_counters: dict[str, int] = {}
@@ -266,6 +268,33 @@ class SkillInvocationDetector:
                             )
                             logger.debug(
                                 "Cached description for skill '%s'",
+                                skill_name,
+                            )
+                        # Cache skill_id and cn_name
+                        skill_id = metadata.get("skill_id", "")
+                        cn_name = metadata.get("cn_name", "")
+                        if skill_id:
+                            self._skill_ids[skill_name] = str(skill_id)
+                            logger.debug(
+                                "Cached skill_id for '%s': %s",
+                                skill_name,
+                                skill_id,
+                            )
+                        else:
+                            logger.debug(
+                                "No skill_id in metadata for '%s'",
+                                skill_name,
+                            )
+                        if cn_name:
+                            self._skill_cn_names[skill_name] = str(cn_name)
+                            logger.debug(
+                                "Cached cn_name for '%s': %s",
+                                skill_name,
+                                cn_name,
+                            )
+                        else:
+                            logger.debug(
+                                "No cn_name in metadata for '%s'",
                                 skill_name,
                             )
                 except Exception as e:
@@ -753,6 +782,19 @@ class SkillInvocationDetector:
         # Get skill description - prefer cached manifest, fallback to SKILL.md
         skill_description = self.get_skill_description(skill_name)
 
+        # Get skill_id and cn_name from cache
+        skill_id = self._skill_ids.get(skill_name)
+        cn_name = self._skill_cn_names.get(skill_name)
+
+        # Debug log for skill_id and cn_name
+        logger.debug(
+            "start_skill: skill_name=%s, skill_id=%s, cn_name=%s, description=%s",
+            skill_name,
+            skill_id,
+            cn_name,
+            skill_description[:50] if skill_description else None,
+        )
+
         # Emit tracing event first to get span_id
         span_id = None
         if self._trace_manager and self._trace_id:
@@ -771,6 +813,8 @@ class SkillInvocationDetector:
                     },
                     user_name=self._user_name,
                     bbk_id=self._bbk_id,
+                    skill_id=skill_id,
+                    skill_cn_name=cn_name,
                     skill_description=skill_description,
                 )
             except Exception as e:

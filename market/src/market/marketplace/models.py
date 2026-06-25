@@ -15,6 +15,7 @@ class MarketItem(BaseModel):
     item_id: str
     item_type: str = "skill"
     name: str
+    skill_id: str = ""  # 技能唯一标识符，跨租户共享
     chinese_name: str = ""
     description: str = ""
     guidance: str = ""

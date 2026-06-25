@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { Modal, Upload, Select, Input, message, Spin, Button } from "antd";
-import { InboxOutlined, ExclamationCircleOutlined, PlusOutlined } from "@ant-design/icons";
+import { Modal, Upload, Select, Input, message, Spin, Button, Tooltip, Alert, Popover } from "antd";
+import { InboxOutlined, PlusOutlined, InfoCircleOutlined, QuestionCircleOutlined } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import { marketApi, type Category } from "../../../api/modules/market";
 
@@ -24,10 +24,16 @@ export default function UploadSkillModal({
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [cnName, setCnName] = useState("");
+  const [skillId, setSkillId] = useState("");
+  const [skillName, setSkillName] = useState("");
+  const [skillIdReused, setSkillIdReused] = useState(false);
+  const [parsingZip, setParsingZip] = useState(false);
+  const [skillIdUsedCount, setSkillIdUsedCount] = useState(0);
+  const [skillIdUsedBy, setSkillIdUsedBy] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [loadingCategories, setLoadingCategories] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [conflictNames, setConflictNames] = useState<string[]>([]);
+  const [skillExists, setSkillExists] = useState(false);  // 同名技能已存在（允许覆盖）
   const [addCategoryModalOpen, setAddCategoryModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addingCategory, setAddingCategory] = useState(false);
@@ -51,12 +57,44 @@ export default function UploadSkillModal({
     if (open) {
       loadCategories();
       setFile(null);
+      setCnName("");
+      setSkillId("");
+      setSkillName("");
+      setSkillIdReused(false);
+      setSkillIdUsedCount(0);
+      setSkillIdUsedBy([]);
       setSelectedCategory(null);
-      setShowConfirm(false);
-      setConflictNames([]);
+      setSkillExists(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // 解析 zip 文件
+  const parseZipFile = async (selectedFile: File) => {
+    setParsingZip(true);
+    try {
+      const result = await marketApi.parseSkillZip(sourceId, selectedFile, true);
+      if (result.error) {
+        message.error(result.error);
+        setParsingZip(false);
+        return;
+      }
+
+      // 设置预解析结果
+      setCnName(result.cn_name || result.skill_name || "");
+      setSkillId(result.skill_id || "");
+      setSkillName(result.skill_name || "");
+      setSkillIdReused(result.skill_id_reused || false);
+      setSkillIdUsedCount(result.skill_id_used_count || 0);
+      setSkillIdUsedBy(result.skill_id_used_by || []);
+      setSkillExists(result.exists || false);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "解析失败";
+      message.error(errorMsg);
+    } finally {
+      setParsingZip(false);
+    }
+  };
 
   const handleAddCategory = async () => {
     const trimmed = newCategoryName.trim();
@@ -81,7 +119,7 @@ export default function UploadSkillModal({
     }
   };
 
-  const handleUpload = async (overwrite: boolean = false) => {
+  const handleUpload = async () => {
     if (!file) {
       message.error("请选择 zip 文件");
       return;
@@ -90,6 +128,13 @@ export default function UploadSkillModal({
       message.error("请选择技能分类");
       return;
     }
+    if (!cnName.trim()) {
+      message.error("请输入中文名称");
+      return;
+    }
+
+    // 同名技能存在时自动覆盖
+    const overwrite = skillExists;
 
     setUploading(true);
 
@@ -101,18 +146,10 @@ export default function UploadSkillModal({
         {
           category_id: selectedCategory,
           overwrite,
+          cn_name: cnName.trim(),
+          skill_id: skillId,  // 传入 parse-zip 生成的 skill_id
         }
       );
-
-      // 检查冲突（仅在 overwrite=false 时可能返回）
-      const conflicts = Array.isArray(result.conflicts) ? result.conflicts : [];
-      if (conflicts.length > 0) {
-        message.destroy("upload");
-        const names = conflicts.map((c) => c.skill_name);
-        setConflictNames(names);
-        setShowConfirm(true);
-        return;
-      }
 
       // 成功
       if (result.version_unchanged) {
@@ -133,12 +170,6 @@ export default function UploadSkillModal({
     }
   };
 
-  const handleConfirmUpload = () => {
-    // 用户确认覆盖，执行上传
-    setShowConfirm(false);
-    handleUpload(true);
-  };
-
   const uploadProps: UploadProps = {
     accept: ".zip",
     showUploadList: false,
@@ -149,14 +180,20 @@ export default function UploadSkillModal({
         return false;
       }
       setFile(file);
-      setShowConfirm(false);
-      setConflictNames([]);
+      setSkillExists(false);
+      // 调用预解析
+      parseZipFile(file);
       return false;
     },
     onRemove: () => {
       setFile(null);
-      setShowConfirm(false);
-      setConflictNames([]);
+      setSkillExists(false);
+      setCnName("");
+      setSkillId("");
+      setSkillName("");
+      setSkillIdReused(false);
+      setSkillIdUsedCount(0);
+      setSkillIdUsedBy([]);
     },
     fileList: file ? [file as any] : [],
   };
@@ -165,113 +202,185 @@ export default function UploadSkillModal({
     <Modal
       title="上传技能到市场"
       open={open}
-      onCancel={() => {
-        setShowConfirm(false);
-        onClose();
-      }}
-      onOk={showConfirm ? undefined : () => handleUpload(false)}
-      okText={showConfirm ? undefined : "上传"}
-      cancelText={showConfirm ? undefined : "取消"}
+      onCancel={onClose}
+      onOk={handleUpload}
+      okText={skillExists ? "覆盖上传" : "上传"}
       okButtonProps={{
-        loading: uploading,
-        disabled: !file || selectedCategory === null,
+        loading: uploading || parsingZip,
+        disabled: !file || selectedCategory === null || skillIdUsedCount > 0,
       }}
-      footer={showConfirm ? null : undefined}
+      cancelText="取消"
       destroyOnClose
     >
-      {showConfirm ? (
-        <div style={{ padding: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <ExclamationCircleOutlined style={{ fontSize: 24, color: "#faad14" }} />
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 16 }}>发现同名技能</div>
-              <div style={{ color: "#8c8c8c", fontSize: 13 }}>
-                以下技能已存在：{conflictNames.join(", ")}
+      <div style={{ marginBottom: 16 }}>
+        <Dragger {...uploadProps} style={{ marginBottom: 16 }}>
+          <p className="ant-upload-drag-icon">
+            <InboxOutlined />
+          </p>
+          <p className="ant-upload-text">拖拽 .zip 文件到此处</p>
+          <p className="ant-upload-hint">或点击选择文件（需包含 SKILL.md）</p>
+        </Dragger>
+        {parsingZip && (
+          <div style={{ textAlign: "center", marginTop: 8 }}>
+            <Spin size="small" />
+            <span style={{ marginLeft: 8, color: "#8c8c8c" }}>正在解析...</span>
+          </div>
+        )}
+        {file && !parsingZip && (
+          <p style={{ color: "#52c41a", marginTop: 8 }}>
+            已选择: {file.name}
+            {skillName && <span style={{ color: "#8c8c8c" }}> ({skillName})</span>}
+          </p>
+        )}
+      </div>
+
+      {/* 同名技能提示（允许覆盖上传） */}
+      {skillExists && !parsingZip && skillIdUsedCount === 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`检测到同名技能 "${skillName}" 已存在`}
+          description="覆盖将更新现有技能版本并创建版本快照，您可以在版本历史中查看和回滚。"
+        />
+      )}
+
+      {/* skill_id 冲突提示（禁止上传） */}
+      {skillIdUsedCount > 0 && !parsingZip && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`skill_id '${skillId}' 已被占用`}
+          description={
+            skillIdUsedCount <= 3
+              ? `已被其他技能占用：${skillIdUsedBy.join("、")}`
+              : `已被 ${skillIdUsedCount} 个其他技能占用`
+          }
+        />
+      )}
+
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", marginBottom: 8 }}>
+          技能分类 <span style={{ color: "#ff4d4f" }}>*</span>
+        </label>
+        {loadingCategories ? (
+          <Spin size="small" />
+        ) : (
+          <div style={{ display: "flex", gap: 8 }}>
+            <Select
+              style={{ flex: 1 }}
+              value={selectedCategory}
+              onChange={setSelectedCategory}
+              placeholder="选择分类"
+              options={categories.map((c) => ({ label: c.name, value: c.id }))}
+            />
+            <Button
+              icon={<PlusOutlined />}
+              onClick={() => setAddCategoryModalOpen(true)}
+              title="新增分类"
+            />
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", marginBottom: 8 }}>
+          中文名称 <span style={{ color: "#ff4d4f" }}>*</span>
+        </label>
+        <Input
+          placeholder="请输入技能中文展示名"
+          value={cnName}
+          onChange={(e) => setCnName(e.target.value)}
+          maxLength={50}
+          showCount
+        />
+      </div>
+
+      {skillId && !parsingZip && (
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", marginBottom: 8 }}>
+            技能唯一标识
+            <Tooltip title={
+              skillIdReused
+                ? "同名技能已存在，复用其 skill_id"
+                : "优先从 SKILL.md metadata.skill_id 提取，若无则自动生成"
+            }>
+              <InfoCircleOutlined style={{ marginLeft: 4, color: "#8c8c8c" }} />
+            </Tooltip>
+          </label>
+          <Input value={skillId} disabled />
+          {skillIdReused && (
+            <p style={{ color: "#52c41a", fontSize: 12, marginTop: 4 }}>
+              同名技能已存在，将复用此标识
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* 新增分类弹窗 */}
+      <Modal
+        title="新增分类"
+        open={addCategoryModalOpen}
+        onOk={handleAddCategory}
+        onCancel={() => {
+          setAddCategoryModalOpen(false);
+          setNewCategoryName("");
+        }}
+        confirmLoading={addingCategory}
+        okText="创建"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Input
+          placeholder="请输入分类名称"
+          value={newCategoryName}
+          onChange={(e) => setNewCategoryName(e.target.value)}
+          onPressEnter={handleAddCategory}
+          maxLength={128}
+          autoFocus
+        />
+      </Modal>
+      <div style={{ color: "#8c8c8c", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+        <Popover
+          trigger="click"
+          placement="top"
+          content={
+            <div style={{ maxWidth: 320 }}>
+              <div style={{ fontWeight: 500, marginBottom: 8 }}>SKILL.md Frontmatter 示例：</div>
+              <pre style={{
+                background: "#f5f5f5",
+                padding: 8,
+                borderRadius: 4,
+                fontSize: 12,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                margin: 0,
+              }}>
+{`---
+name: "my_skill"
+description: "技能功能简述"
+metadata:
+  skill_id: "skill_abc"  # 可选，自动生成
+  cn_name: "我的技能"    # 可选，≤50字
+---
+
+# 技能说明
+...`}
+              </pre>
+              <div style={{ marginTop: 8, fontSize: 12 }}>
+                <div><b>name</b>: 技能英文名（必填）</div>
+                <div><b>description</b>: 功能描述（必填）</div>
+                <div><b>metadata.skill_id</b>: 唯一标识，跨租户共享，同名技能自动复用（可选）</div>
+                <div><b>metadata.cn_name</b>: 中文展示名，不超过50字（可选）</div>
               </div>
             </div>
-          </div>
-          <div style={{ marginBottom: 16, color: "#595959" }}>
-            覆盖将更新现有技能版本并创建版本快照，您可以在版本历史中查看和回滚。
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
-            <Button onClick={() => setShowConfirm(false)} disabled={uploading}>
-              取消
-            </Button>
-            <Button type="primary" onClick={handleConfirmUpload} loading={uploading}>
-              确认覆盖
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div style={{ marginBottom: 16 }}>
-            <Dragger {...uploadProps} style={{ marginBottom: 16 }}>
-              <p className="ant-upload-drag-icon">
-                <InboxOutlined />
-              </p>
-              <p className="ant-upload-text">拖拽 .zip 文件到此处</p>
-              <p className="ant-upload-hint">或点击选择文件（需包含 SKILL.md）</p>
-            </Dragger>
-            {file && (
-              <p style={{ color: "#52c41a", marginTop: 8 }}>
-                已选择: {file.name}
-              </p>
-            )}
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: "block", marginBottom: 8 }}>
-              技能分类 <span style={{ color: "#ff4d4f" }}>*</span>
-            </label>
-            {loadingCategories ? (
-              <Spin size="small" />
-            ) : (
-              <div style={{ display: "flex", gap: 8 }}>
-                <Select
-                  style={{ flex: 1 }}
-                  value={selectedCategory}
-                  onChange={setSelectedCategory}
-                  placeholder="选择分类"
-                  options={categories.map((c) => ({ label: c.name, value: c.id }))}
-                />
-                <Button
-                  icon={<PlusOutlined />}
-                  onClick={() => setAddCategoryModalOpen(true)}
-                  title="新增分类"
-                />
-              </div>
-            )}
-          </div>
-
-          {/* 新增分类弹窗 */}
-          <Modal
-            title="新增分类"
-            open={addCategoryModalOpen}
-            onOk={handleAddCategory}
-            onCancel={() => {
-              setAddCategoryModalOpen(false);
-              setNewCategoryName("");
-            }}
-            confirmLoading={addingCategory}
-            okText="创建"
-            cancelText="取消"
-            destroyOnClose
-          >
-            <Input
-              placeholder="请输入分类名称"
-              value={newCategoryName}
-              onChange={(e) => setNewCategoryName(e.target.value)}
-              onPressEnter={handleAddCategory}
-              maxLength={128}
-              autoFocus
-            />
-          </Modal>
-
-          <p style={{ color: "#8c8c8c", fontSize: 12 }}>
-            提示：技能名称和描述将从 zip 包中的 SKILL.md frontmatter 自动解析
-          </p>
-        </>
-      )}
+          }
+        >
+          <QuestionCircleOutlined style={{ cursor: "pointer", color: "#1890ff" }} />
+        </Popover>
+        <span>技能名称、描述和唯一标识从 SKILL.md frontmatter 自动解析，同名技能复用已有标识</span>
+      </div>
     </Modal>
   );
 }

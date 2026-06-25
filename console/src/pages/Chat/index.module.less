@@ -108,6 +108,136 @@
   -webkit-line-clamp: 2;
 }
 
+.taskEditModal {
+  max-height: calc(100vh - 48px);
+
+  :global {
+    .ant-modal-content,
+    .swe-modal-content {
+      max-height: calc(100vh - 48px);
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 14px 36px rgba(29, 36, 51, 0.14);
+    }
+
+    .ant-modal-header,
+    .swe-modal-header {
+      margin: 0;
+      padding: 18px 24px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #ffffff;
+    }
+
+    .ant-modal-title,
+    .swe-modal-title {
+      color: #111827;
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 26px;
+    }
+
+    .ant-modal-close,
+    .swe-modal-close {
+      top: 16px;
+      inset-inline-end: 18px;
+      border-radius: 8px;
+      color: #4b5563;
+    }
+
+    .ant-modal-body,
+    .swe-modal-body {
+      max-height: min(68vh, 720px);
+      padding: 20px 24px 8px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: #ffffff;
+    }
+
+    .ant-modal-footer,
+    .swe-modal-footer {
+      margin: 0;
+      padding: 14px 24px 18px;
+      border-top: 1px solid #e5e7eb;
+      background: #ffffff;
+    }
+  }
+}
+
+.taskEditForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 2px;
+
+  :global {
+    .ant-form-item,
+    .swe-form-item {
+      min-width: 0;
+      margin-bottom: 16px;
+    }
+
+    .ant-form-item-label,
+    .swe-form-item-label {
+      padding-bottom: 6px;
+    }
+
+    .ant-form-item-label > label,
+    .swe-form-item-label > label {
+      min-width: 0;
+      color: #111827;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 20px;
+      white-space: normal;
+    }
+
+    .ant-input,
+    .ant-input-number,
+    .ant-select-selector,
+    .swe-input,
+    .swe-input-number,
+    .swe-select-selector {
+      border-radius: 8px !important;
+    }
+
+    textarea.ant-input,
+    textarea.swe-input {
+      max-width: 100%;
+      resize: vertical;
+      word-break: break-word;
+    }
+
+    .ant-form-item-extra,
+    .swe-form-item-extra {
+      color: #8a94a6;
+      font-size: 12px;
+      line-height: 18px;
+    }
+  }
+}
+
+.taskEditModalFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+
+  :global {
+    .ant-btn-primary,
+    .swe-btn-primary {
+      background: #3769fc;
+      border-color: #3769fc;
+    }
+
+    .ant-btn-primary:not(:disabled):hover,
+    .swe-btn-primary:not(:disabled):hover {
+      background: #2957dc;
+      border-color: #2957dc;
+    }
+  }
+}
+
 :global(.dark-mode) {
   .suggestionCommand {
     color: #3769fc;

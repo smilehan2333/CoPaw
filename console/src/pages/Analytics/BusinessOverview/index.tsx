@@ -68,7 +68,7 @@ const METRIC_ACCENT_COLORS = [
   "#7c3aed",
 ];
 
-const DONUT_COLORS = ["#18b368", "#ef4444", "#94a3b8"];
+const DONUT_COLORS = ["#18b368", "#f97316", "#ef4444", "#94a3b8"]; // 成功、运行中、失败、取消
 const safeNumber = (value: unknown): number =>
   typeof value === "number" && !Number.isNaN(value) ? value : 0;
 
@@ -234,16 +234,22 @@ function buildExecutionSummary(
       color: DONUT_COLORS[0],
     },
     {
+      key: "running",
+      label: "运行中",
+      value: safeNumber(summary?.running),
+      color: DONUT_COLORS[1],
+    },
+    {
       key: "failed",
       label: "失败",
       value: safeNumber(summary?.failed),
-      color: DONUT_COLORS[1],
+      color: DONUT_COLORS[2],
     },
     {
       key: "cancelled",
       label: "已取消/跳过",
       value: safeNumber(summary?.cancelled),
-      color: DONUT_COLORS[2],
+      color: DONUT_COLORS[3],
     },
   ];
 }
@@ -494,10 +500,9 @@ function getNiceAxisMax(value: number): number {
   }
   const magnitude = 10 ** Math.floor(Math.log10(value));
   const normalized = value / magnitude;
-  if (normalized <= 1) return magnitude;
-  if (normalized <= 2) return 2 * magnitude;
-  if (normalized <= 5) return 5 * magnitude;
-  return 10 * magnitude;
+  const candidates = [1, 1.5, 2, 2.5, 5, 10];
+  const candidate = candidates.find((item) => normalized <= item) ?? 10;
+  return candidate * magnitude;
 }
 
 function formatTrendAxisLabel(value: number, axisMax: number): string {
@@ -549,22 +554,16 @@ export function buildTrendSvgData(trendData: TrendDatum[]) {
     ...trendData.map((item) => safeNumber(item.users)),
     0,
   );
-  const maxCalls = Math.max(
-    rawMaxCalls,
-    1,
-  );
-  const maxUsers = Math.max(
-    rawMaxUsers,
-    1,
-  );
   const leftAxisMax = getNiceAxisMax(rawMaxUsers);
   const rightAxisMax = getNiceAxisMax(rawMaxCalls);
+  const userScaleMax = Math.max(leftAxisMax, 1);
+  const callScaleMax = Math.max(rightAxisMax, 1);
   const step = trendData.length > 1 ? chartWidth / (trendData.length - 1) : 0;
   const labelInterval = getLabelInterval(trendData.length);
   const barWidth = getBarWidth(trendData.length, step);
 
   const bars = trendData.map((item, index) => {
-    const barHeight = (safeNumber(item.users) / maxUsers) * (chartHeight - 8);
+    const barHeight = (safeNumber(item.users) / userScaleMax) * chartHeight;
     const x = chartLeft + index * step - barWidth / 2;
     const label = item.date.includes(":")
       ? dayjs(item.date).format("HH:mm")
@@ -585,7 +584,7 @@ export function buildTrendSvgData(trendData: TrendDatum[]) {
     const y =
       chartTop +
       chartHeight -
-      (safeNumber(item.calls) / maxCalls) * chartHeight;
+      (safeNumber(item.calls) / callScaleMax) * chartHeight;
     return { x, y };
   });
 
@@ -676,6 +675,7 @@ export default function BusinessOverviewPage() {
   const [activeHasMore, setActiveHasMore] = useState(true);
   const [activeLoading, setActiveLoading] = useState(false);
   const activeLoadingRef = useRef(false);
+  const activeListRef = useRef<HTMLDivElement | null>(null);
   // 用户过滤类型：filtered(过滤IT人员) / all(全部用户)
   const [activeFilterType, setActiveFilterType] = useState<"filtered" | "all">("all");
   // 使用深度卡片默认隐藏
@@ -685,6 +685,7 @@ export default function BusinessOverviewPage() {
   const [skillsHasMore, setSkillsHasMore] = useState(true);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const skillsLoadingRef = useRef(false);
+  const skillsListRef = useRef<HTMLDivElement | null>(null);
   const [errorSummaryData, setErrorSummaryData] = useState<ErrorSummary | null>(null);
   const [taskStatusSummary, setTaskStatusSummary] =
     useState<TaskStatusSummary | null>(null);
@@ -824,7 +825,8 @@ export default function BusinessOverviewPage() {
           );
           return [...previous, ...dedupedUsers];
         });
-        setActiveHasMore(mappedUsers.length === 10);
+        const loadedCount = append ? page * 10 : mappedUsers.length;
+        setActiveHasMore(loadedCount < (result.total || 0));
       } catch (error) {
         console.error("Failed to fetch active users:", error);
       } finally {
@@ -865,8 +867,8 @@ export default function BusinessOverviewPage() {
           setSkills(rows);
         }
 
-        // 如果返回的数据少于 pageSize，说明没有更多数据了
-        setSkillsHasMore(rows.length >= pageSize);
+        const loadedCount = append ? page * pageSize : rows.length;
+        setSkillsHasMore(loadedCount < (result.total || 0));
       } catch (error) {
         console.error("Failed to fetch skills:", error);
       } finally {
@@ -930,7 +932,10 @@ export default function BusinessOverviewPage() {
 
   useEffect(() => {
     fetchDashboard();
-    fetchSkills();
+    setSkills([]);
+    setSkillsPage(1);
+    setSkillsHasMore(true);
+    fetchSkills(1, false);
     fetchErrorSummary();
     fetchTaskStatusSummary();
     fetchDepthSummary();
@@ -946,6 +951,8 @@ export default function BusinessOverviewPage() {
   // 活跃用户请求独立处理，避免 activeFilterType 变化触发其他请求
   useEffect(() => {
     setActivePage(1);
+    setActiveHasMore(true);
+    setActiveUsers([]);
     fetchActiveUsers(1, false);
   }, [
     fetchActiveUsers,
@@ -1027,6 +1034,40 @@ export default function BusinessOverviewPage() {
     },
     [skillsHasMore, skillsPage, fetchSkills],
   );
+
+  useEffect(() => {
+    if (!skillsHasMore || skillsLoading || skills.length === 0) {
+      return;
+    }
+
+    const list = skillsListRef.current;
+    if (!list) {
+      return;
+    }
+
+    if (list.scrollHeight <= list.clientHeight + 4) {
+      const nextPage = skillsPage + 1;
+      setSkillsPage(nextPage);
+      fetchSkills(nextPage, true);
+    }
+  }, [fetchSkills, skills, skillsHasMore, skillsLoading, skillsPage]);
+
+  useEffect(() => {
+    if (!activeHasMore || activeLoading || activeUsers.length === 0) {
+      return;
+    }
+
+    const list = activeListRef.current;
+    if (!list) {
+      return;
+    }
+
+    if (list.scrollHeight <= list.clientHeight + 4) {
+      const nextPage = activePage + 1;
+      setActivePage(nextPage);
+      fetchActiveUsers(nextPage, true);
+    }
+  }, [activeHasMore, activeLoading, activePage, activeUsers, fetchActiveUsers]);
 
   const disabledDate = (current: Dayjs | null): boolean =>
     !!current && current.isAfter(dayjs().startOf("day"), "day");
@@ -1445,7 +1486,11 @@ export default function BusinessOverviewPage() {
             <span>结果查看</span>
             <span>主动调用</span>
           </div>
-          <div className={styles.rankList} onScroll={handleActiveScroll}>
+          <div
+            ref={activeListRef}
+            className={styles.rankList}
+            onScroll={handleActiveScroll}
+          >
             {activeLoading && activeUsers.length === 0 ? (
               <div className={styles.listFootnote}>加载中...</div>
             ) : activeUsers.length === 0 ? (
@@ -1629,7 +1674,11 @@ export default function BusinessOverviewPage() {
             <span>技能</span>
             <span>调用次数</span>
           </div>
-          <div className={styles.rankList} onScroll={handleSkillsScroll}>
+          <div
+            ref={skillsListRef}
+            className={styles.rankList}
+            onScroll={handleSkillsScroll}
+          >
             {skillsLoading && skills.length === 0 ? (
               <div className={styles.listFootnote}>加载中...</div>
             ) : skills.length === 0 ? (

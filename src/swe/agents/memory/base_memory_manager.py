@@ -4,6 +4,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import TYPE_CHECKING, Optional
 
 
@@ -32,8 +33,6 @@ class BaseMemoryManager(ABC):
     Attributes:
         working_dir: Working directory path for memory storage.
         agent_id: Unique agent identifier.
-        chat_model: Chat model used for compaction and summarization.
-        formatter: Formatter paired with the chat model.
     """
 
     def __init__(
@@ -52,11 +51,11 @@ class BaseMemoryManager(ABC):
         self.working_dir: str = working_dir
         self.agent_id: str = agent_id
         self.tenant_id: str | None = tenant_id
-        self.chat_model: Optional[ChatModelBase] = None
-        self.formatter: Optional[FormatterBase] = None
 
-        # Initialize list to track background summarization tasks
-        self.summary_tasks: list[asyncio.Task] = []
+        # 按会话隔离后台总结任务，避免不同对话互相等待或回收任务。
+        self._summary_tasks_by_scope: dict[str, list[asyncio.Task]] = (
+            defaultdict(list)
+        )
 
     @abstractmethod
     async def start(self) -> None:
@@ -131,11 +130,20 @@ class BaseMemoryManager(ABC):
             **kwargs: Additional keyword arguments for the dream task.
         """
 
-    def add_async_summary_task(self, messages: list[Msg], **kwargs):
+    def add_async_summary_task(
+        self,
+        messages: list[Msg],
+        *,
+        chat_model: Optional[ChatModelBase] = None,
+        formatter: Optional[FormatterBase] = None,
+        scope_id: str | None = None,
+        **kwargs,
+    ):
         """Add an asynchronous summary task for the given messages."""
+        scope_key = self._normalize_summary_scope(scope_id)
 
         remaining_tasks = []
-        for task in self.summary_tasks:
+        for task in self._summary_tasks_by_scope[scope_key]:
             if task.done():
                 if task.cancelled():
                     logger.warning("Summary task was cancelled.")
@@ -148,14 +156,27 @@ class BaseMemoryManager(ABC):
                     logger.info(f"Summary task completed: {result}")
             else:
                 remaining_tasks.append(task)
-        self.summary_tasks = remaining_tasks
+        self._summary_tasks_by_scope[scope_key] = remaining_tasks
 
         task = asyncio.create_task(
-            self.summary_memory(messages=messages, **kwargs),
+            self.summary_memory(
+                messages=messages,
+                _bound_chat_model=chat_model,
+                _bound_formatter=formatter,
+                **kwargs,
+            ),
         )
-        self.summary_tasks.append(task)
+        self._summary_tasks_by_scope[scope_key].append(task)
 
-    async def await_summary_tasks(self) -> str:
+    def get_summary_task_count(self, scope_id: str | None = None) -> int:
+        """返回指定会话作用域下的 summary 任务数量。"""
+        scope_key = self._normalize_summary_scope(scope_id)
+        return len(self._summary_tasks_by_scope.get(scope_key, []))
+
+    async def await_summary_tasks(
+        self,
+        scope_id: str | None = None,
+    ) -> str:
         """
         Wait for all background summary tasks to complete and collect results.
 
@@ -175,8 +196,10 @@ class BaseMemoryManager(ABC):
             - Task exceptions are logged but do not raise to the caller
             - Use this before application shutdown
         """
+        scope_key = self._normalize_summary_scope(scope_id)
+        tasks = list(self._summary_tasks_by_scope.get(scope_key, []))
         result = ""
-        for task in self.summary_tasks:
+        for task in tasks:
             if task.done():
                 # Task has already completed, check its status
                 if task.cancelled():
@@ -210,8 +233,21 @@ class BaseMemoryManager(ABC):
                     result += f"Summary task failed: {e}\n"
 
         # Clear the task list after processing all tasks
-        self.summary_tasks.clear()
+        self._summary_tasks_by_scope.pop(scope_key, None)
         return result
+
+    @property
+    def summary_tasks(self) -> list[asyncio.Task]:
+        """兼容旧调用方，仅返回默认作用域任务列表。"""
+        return self._summary_tasks_by_scope[
+            self._normalize_summary_scope(None)
+        ]
+
+    @staticmethod
+    def _normalize_summary_scope(scope_id: str | None) -> str:
+        """规范化 summary 任务作用域键。"""
+        normalized = str(scope_id or "").strip()
+        return normalized or "__default__"
 
     @abstractmethod
     async def memory_search(

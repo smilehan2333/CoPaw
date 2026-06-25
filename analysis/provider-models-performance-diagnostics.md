@@ -192,3 +192,153 @@ These remain hypotheses until production logs confirm them:
 
 The next analysis step should start from production log lines, not from another
 speculative code change.
+
+## 2026-06-24 Follow-up: 30s Timeout With No Existing Slow Logs
+
+New production facts:
+
+- Affected tenants have already been initialized.
+- Provider directories and provider JSON content already exist.
+- `X-User-Name` and `X-Bbk-Id` are present on the slow requests.
+- No `Error fetching user info for tenant ...` logs are emitted.
+- No `provider_manager_dependency_slow` or `provider_list_info_slow` logs are
+  emitted before the request fails around 30 seconds.
+
+Interpretation:
+
+- The user identity remote lookup path is not the active cause when both
+  identity headers are present.
+- Existing slow logs are return-after logs. Their absence means the request does
+  not reach those completed measurement points before the client/gateway times
+  out.
+- With provider storage confirmed present, the highest-value suspect is a
+  request stuck before `ProviderManager.get_instance(...)` returns:
+  - provider storage existence checks or provider init lock;
+  - global `ProviderManager._instances_lock` wait;
+  - `ProviderManager(...)` construction under that global lock;
+  - filesystem work during construction (`mkdir`, `glob`, `stat`, small JSON
+    reads, `active_model.json`, freshness token recording).
+
+Additional boundary logs were added to locate non-returning segments:
+
+- `provider_manager_dependency_start`
+- `provider_storage_ensure_start`
+- `provider_storage_ensure_done`
+- `provider_manager_get_instance_start`
+- `provider_manager_get_instance_done`
+- `provider_manager_instance_cache_miss`
+- `provider_manager_instance_lock_acquired`
+- `provider_manager_instance_create_start`
+- `provider_manager_instance_create_done`
+- `provider_manager_instance_reused_after_lock`
+- `provider_manager_init_start`
+- `provider_manager_init_step_start`
+- `provider_manager_init_step_done`
+- `provider_manager_init_done`
+
+### How To Diagnose The Next Reproduction
+
+For a timed-out `GET /api/models` request, find the last log line for the same
+tenant/source/scope and apply this decision tree.
+
+If the last line is `provider_manager_dependency_start`, the request entered the
+provider dependency but did not finish the first provider storage operation.
+Check whether a subsequent `provider_storage_ensure_start` is missing because
+logging was interrupted or the process terminated.
+
+If the last line is `provider_storage_ensure_start`, the request is stuck in
+`ProviderManager.ensure_tenant_provider_storage(...)`.
+
+Likely causes:
+
+- slow `root_path.exists()` on production storage;
+- waiting on `.provider_init.lock`;
+- source/template copy or directory creation despite the expected directory
+  already existing;
+- the checked `root_path` is not the same effective provider path that was
+  manually inspected.
+
+Next evidence to collect:
+
+- full `root_path`, `route_tenant_id`, `provider_tenant_id`, `source_id`,
+  `scope_id`;
+- whether `root_path` exists on the same pod/container;
+- any `Waiting for concurrent provider initialization` or
+  `Failed to initialize provider config` logs.
+
+If the last line is `provider_storage_ensure_done` or
+`provider_manager_get_instance_start`, the request finished storage ensure and
+is entering `ProviderManager.get_instance(...)`.
+
+If the last line is `provider_manager_instance_cache_miss` and there is no
+`provider_manager_instance_lock_acquired`, the request is waiting on the global
+`ProviderManager._instances_lock`. This means another request/thread is
+currently constructing a ProviderManager instance. Capture a stack dump from the
+same process to identify the lock holder.
+
+Recommended command on the pod:
+
+```bash
+py-spy dump -p <server_pid>
+```
+
+Look for another thread inside:
+
+- `ProviderManager.get_instance`
+- `ProviderManager.__init__`
+- `_prepare_disk_storage`
+- `_init_from_storage`
+- `load_provider`
+- `_record_mtimes`
+- `Path.glob`
+- `Path.exists`
+- `Path.stat`
+- `json.load`
+
+If the last line is `provider_manager_instance_lock_acquired` or
+`provider_manager_instance_create_start`, the request acquired the global lock
+and is constructing the manager. The next `provider_manager_init_step_start`
+line identifies the current constructor phase.
+
+Constructor phase interpretation:
+
+- `step=prepare_disk_storage`: directory creation or chmod is slow.
+- `step=init_builtins`: builtin provider registration is unexpectedly slow.
+- `step=copy_builtin_defaults`: pydantic deep copy of builtin providers is slow.
+- `step=init_from_storage`: provider JSON loading, custom provider globbing, or
+  active model JSON reading is slow.
+- `step=apply_default_annotations`: capability baseline annotation is slow.
+- `step=record_mtimes`: per-file stat/glob snapshot is slow.
+
+If `provider_manager_init_done` appears but
+`provider_manager_get_instance_done` does not, inspect for an exception or
+process cancellation immediately after construction.
+
+If `provider_manager_get_instance_done` appears and the request still times out,
+the next suspect is `list_provider_info()`. Add or enable finer logs around:
+
+- `_refresh_if_stale()`;
+- `_detect_changed_builtins()`;
+- `_detect_custom_changes()`;
+- `_detect_active_model_change()`;
+- `asyncio.gather(provider.get_info(), ...)`.
+
+### Differentiating `/api/models` From `/api/models/active`
+
+The frontend `loadModelData()` calls `/models` and `/models/active` together.
+Interpret them separately:
+
+- `/api/models` uses `get_provider_manager()` and can block on the manager
+  cache/lock/constructor path.
+- `/api/models/active` reads `active_model.json` directly and does not use the
+  `get_provider_manager()` dependency.
+
+If only `/api/models` times out and `/api/models/active` is fast, focus on
+`ProviderManager.get_instance(...)` and manager construction.
+
+If both endpoints time out, look earlier:
+
+- provider storage ensure;
+- source-system config middleware;
+- tenant workspace bootstrap;
+- production storage latency shared by provider and active model files.

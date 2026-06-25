@@ -8,6 +8,7 @@ export interface TaskSidebarMeta {
   canRun: boolean;
   canResume: boolean;
   canDelete: boolean;
+  canEdit: boolean;
 }
 
 export interface TaskGroups {
@@ -39,6 +40,7 @@ export function getTaskSidebarMeta(job: CronJobSpecOutput): TaskSidebarMeta {
       canRun: false,
       canResume: false,
       canDelete: false,
+      canEdit: !job.enabled,
     };
   }
 
@@ -49,7 +51,8 @@ export function getTaskSidebarMeta(job: CronJobSpecOutput): TaskSidebarMeta {
       canPause: false,
       canRun: false,
       canResume: true,
-      canDelete: true,
+      canDelete: !job.enabled,
+      canEdit: !job.enabled,
     };
   }
 
@@ -60,7 +63,8 @@ export function getTaskSidebarMeta(job: CronJobSpecOutput): TaskSidebarMeta {
       canPause: false,
       canRun: false,
       canResume: true,
-      canDelete: true,
+      canDelete: !job.enabled,
+      canEdit: !job.enabled,
     };
   }
 
@@ -70,7 +74,8 @@ export function getTaskSidebarMeta(job: CronJobSpecOutput): TaskSidebarMeta {
     canPause: true,
     canRun: true,
     canResume: false,
-    canDelete: true,
+    canDelete: !job.enabled,
+    canEdit: !job.enabled,
   };
 }
 

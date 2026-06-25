@@ -253,6 +253,12 @@ async def run_command_path(  # pylint: disable=too-many-statements
         memory=memory,
         memory_manager=runner.memory_manager,
         enable_memory_manager=runner.memory_manager is not None,
+        request_context={
+            "session_id": session_id,
+            "user_id": user_id,
+            "channel": getattr(request, "channel", "") or "",
+            "trace_id": getattr(request, "trace_id", None),
+        },
     )
     try:
         response_msg = await conv_handler.handle_conversation_command(query)

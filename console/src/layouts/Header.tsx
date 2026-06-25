@@ -27,7 +27,7 @@ export default function Header() {
   const source = useIframeStore((state) => state.source);
   const setContext = useIframeStore((state) => state.setContext);
   const sourceForSwitch = source;
-  const canUseOpsMode = manager || isSuperManager;
+  const canUseOpsMode = (manager || isSuperManager) && source === "ruice";
 
   const [opsMode, setOpsMode] = useState(
     () => sessionStorage.getItem(OPS_MODE_KEY) === "true",

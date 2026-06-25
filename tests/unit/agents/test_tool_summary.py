@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from collections import OrderedDict
+
 import pytest
 
 from swe.agents.utils import tool_summary
@@ -224,3 +226,282 @@ async def test_async_output_summary_hides_shell_output_details(
 
     assert summary == "这项操作已经完成"
     assert "very technical stdout details" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_run_summary_model_binds_current_trace_context(
+    monkeypatch,
+) -> None:
+    observed = {}
+
+    async def fake_model(_messages):
+        return "查看资料内容"
+
+    def fake_create_model_and_formatter(*, trace_context=None):
+        observed["trace_context"] = trace_context
+        return fake_model, object()
+
+    monkeypatch.setattr(
+        tool_summary,
+        "create_model_and_formatter",
+        fake_create_model_and_formatter,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "capture_current_trace_context",
+        lambda: {
+            "trace_id": "trace-summary",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "channel": "console",
+            "source_id": "source-1",
+        },
+    )
+
+    summary = await tool_summary._run_summary_model("读取文件")
+
+    assert summary == "查看资料内容"
+    assert observed["trace_context"]["trace_id"] == "trace-summary"
+
+
+@pytest.mark.asyncio
+async def test_run_summary_model_reuses_cached_model_within_same_trace(
+    monkeypatch,
+) -> None:
+    created = []
+
+    async def fake_model(_messages):
+        return "查看资料内容"
+
+    def fake_create_model_and_formatter(*, trace_context=None):
+        created.append(trace_context)
+        return fake_model, object()
+
+    monkeypatch.setattr(
+        tool_summary,
+        "create_model_and_formatter",
+        fake_create_model_and_formatter,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "capture_current_trace_context",
+        lambda: {"trace_id": "trace-summary"},
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_summary_models_by_trace",
+        OrderedDict(),
+    )
+
+    summary_a = await tool_summary._run_summary_model("读取文件")
+    summary_b = await tool_summary._run_summary_model("继续读取文件")
+
+    assert summary_a == "查看资料内容"
+    assert summary_b == "查看资料内容"
+    assert len(created) == 1
+
+
+def test_reset_summary_caches_disposes_cached_models() -> None:
+    closed = []
+
+    class FakeModel:
+        def close(self) -> None:
+            closed.append("closed")
+
+    tool_summary._summary_models_by_trace = OrderedDict(
+        [(("trace-a", ("tenant-a", "agent-a")), FakeModel())],
+    )
+    tool_summary._model_summary_cache = {"key": "value"}
+
+    tool_summary.reset_summary_caches()
+
+    assert closed == ["closed"]
+    assert tool_summary._summary_models_by_trace == OrderedDict()
+    assert tool_summary._model_summary_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_run_summary_model_reuses_cached_model_without_trace_within_scope(
+    monkeypatch,
+) -> None:
+    created = []
+
+    async def fake_model(_messages):
+        return "查看资料内容"
+
+    def fake_create_model_and_formatter(*, trace_context=None):
+        created.append(trace_context)
+        return fake_model, object()
+
+    monkeypatch.setattr(
+        tool_summary,
+        "create_model_and_formatter",
+        fake_create_model_and_formatter,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "capture_current_trace_context",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_summary_models_by_trace",
+        OrderedDict(),
+    )
+
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("继续读取文件")
+
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_summary_model_cache_key_includes_runtime_scope(
+    monkeypatch,
+) -> None:
+    created = []
+    runtime_scopes = [("tenant-a", "agent-a"), ("tenant-a", "agent-b")]
+
+    async def fake_model(_messages):
+        return "查看资料内容"
+
+    def fake_create_model_and_formatter(*, trace_context=None):
+        created.append(trace_context)
+        return fake_model, object()
+
+    monkeypatch.setattr(
+        tool_summary,
+        "create_model_and_formatter",
+        fake_create_model_and_formatter,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "capture_current_trace_context",
+        lambda: {"trace_id": "trace-summary"},
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_runtime_scope_key",
+        lambda: runtime_scopes.pop(0),
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_summary_models_by_trace",
+        OrderedDict(),
+    )
+
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("继续读取文件")
+
+    assert len(created) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_summary_model_evicts_oldest_cached_trace(
+    monkeypatch,
+) -> None:
+    created = []
+    trace_ids = iter(
+        [
+            {"trace_id": "trace-1"},
+            {"trace_id": "trace-2"},
+            {"trace_id": "trace-3"},
+            {"trace_id": "trace-1"},
+        ],
+    )
+
+    async def fake_model(_messages):
+        return "查看资料内容"
+
+    def fake_create_model_and_formatter(*, trace_context=None):
+        created.append(trace_context)
+        return fake_model, object()
+
+    monkeypatch.setattr(
+        tool_summary,
+        "create_model_and_formatter",
+        fake_create_model_and_formatter,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "capture_current_trace_context",
+        lambda: next(trace_ids),
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_runtime_scope_key",
+        lambda: ("tenant-a", "agent-a"),
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_summary_models_by_trace",
+        OrderedDict(),
+    )
+    monkeypatch.setattr(tool_summary, "_SUMMARY_MODEL_CACHE_LIMIT", 2)
+
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("读取文件")
+
+    assert [item["trace_id"] for item in created] == [
+        "trace-1",
+        "trace-2",
+        "trace-3",
+        "trace-1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_summary_model_eviction_disposes_oldest_cached_model(
+    monkeypatch,
+) -> None:
+    closed = []
+    trace_ids = iter(
+        [
+            {"trace_id": "trace-1"},
+            {"trace_id": "trace-2"},
+            {"trace_id": "trace-3"},
+        ],
+    )
+
+    class FakeModel:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        async def __call__(self, _messages):
+            return "查看资料内容"
+
+        async def aclose(self) -> None:
+            closed.append(self.label)
+
+    def fake_create_model_and_formatter(*, trace_context=None):
+        return FakeModel(trace_context["trace_id"]), object()
+
+    monkeypatch.setattr(
+        tool_summary,
+        "create_model_and_formatter",
+        fake_create_model_and_formatter,
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "capture_current_trace_context",
+        lambda: next(trace_ids),
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_runtime_scope_key",
+        lambda: ("tenant-a", "agent-a"),
+    )
+    monkeypatch.setattr(
+        tool_summary,
+        "_summary_models_by_trace",
+        OrderedDict(),
+    )
+    monkeypatch.setattr(tool_summary, "_SUMMARY_MODEL_CACHE_LIMIT", 2)
+
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("读取文件")
+    await tool_summary._run_summary_model("读取文件")
+
+    assert closed == ["trace-1"]

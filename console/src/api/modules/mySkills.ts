@@ -16,6 +16,8 @@ export interface MySkill {
   creator_name?: string;
   created_at?: string;  // 技能创建/接收时间
   updated_at?: string;  // 技能最后更新时间
+  skill_id?: string;  // 唯一标识符
+  cn_name?: string;  // 中文展示名
 }
 
 export interface FileTreeNode {
@@ -77,7 +79,8 @@ export const mySkillsApi = {
   saveSkillFile: async (
     skillName: string,
     filePath: string,
-    content: string
+    content: string,
+    cnName?: string
   ): Promise<void> => {
     const encodedName = encodeURIComponent(skillName);
     const encodedPath = filePath
@@ -89,7 +92,7 @@ export const mySkillsApi = {
       ...(mergeHeaders({
         "Content-Type": "application/json",
       })),
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, cn_name: cnName }),
     };
     await request<void>(`/market/skills/mine/${encodedName}/files/${encodedPath}`, opts);
   },

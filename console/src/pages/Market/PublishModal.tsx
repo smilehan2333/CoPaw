@@ -1,12 +1,9 @@
-import { Modal, Form, Input, Select, Button, Spin, message, Typography, Alert } from "antd";
+import { Modal, Form, Input, Select, Button, Spin, message } from "antd";
 import { ExclamationCircleOutlined } from "@ant-design/icons";
 import { useState, useEffect } from "react";
 import { marketApi, PublishSkillRequest, type Category } from "../../api/modules/market";
 import { BBK_ID_MAP } from "../../constants/bbk";
 import { useIframeStore } from "../../stores/iframeStore";
-
-const { TextArea } = Input;
-const { Text } = Typography;
 
 /** 带有 HTTP 元数据的错误类型 */
 interface ConflictDetail {
@@ -88,6 +85,8 @@ interface PublishModalProps {
     skillMd: string;
     skillDirName?: string; // 技能目录名，用于同步整个目录
     version?: string; // 用户工作区版本号
+    skillId?: string; // 技能唯一标识符，直接从用户数据取
+    cnName?: string; // 中文展示名，直接从用户数据取
   };
 }
 
@@ -116,8 +115,6 @@ export function PublishModal({ open, sourceId, userId, onClose, onSuccess, initi
     if (open && initialData) {
       form.setFieldsValue({
         name: initialData.skillName,
-        description: initialData.description,
-        skill_md: initialData.skillMd,
       });
     } else if (open) {
       form.resetFields();
@@ -130,17 +127,19 @@ export function PublishModal({ open, sourceId, userId, onClose, onSuccess, initi
       setLoading(true);
       const payload: PublishSkillRequest = {
         name: values.name,
-        description: values.description,
+        description: initialData?.description || "",
         creator_id: userId,
         creator_name: userName,
         category_id: values.category_id,
         bbk_ids: values.bbk_ids,
         skill_json: initialData?.skillJson || {},
-        skill_md: values.skill_md,
+        skill_md: initialData?.skillMd || "",
         skill_name: initialData?.skillDirName,
         agent_id: "default",
         overwrite,
         source_user_version: initialData?.version,
+        skill_id: initialData?.skillId || "", // 直接传递用户数据中的 skill_id
+        cn_name: initialData?.cnName || "", // 直接传递用户数据中的 cn_name
       };
       const result = await marketApi.publishSkill(sourceId, payload);
       if (result.version_unchanged) {
@@ -247,9 +246,6 @@ export function PublishModal({ open, sourceId, userId, onClose, onSuccess, initi
         <Form.Item name="name" label="技能名称" rules={[{ required: true }]}>
           <Input disabled={!!initialData} />
         </Form.Item>
-        <Form.Item name="description" label="描述">
-          <TextArea rows={2} />
-        </Form.Item>
         <Form.Item name="category_id" label="分类" rules={[{ required: true, message: "请选择分类" }]}>
           {loadingCategories ? (
             <Spin size="small" />
@@ -267,9 +263,6 @@ export function PublishModal({ open, sourceId, userId, onClose, onSuccess, initi
             placeholder="不选择则全员可见"
             options={BBK_ID_MAP}
           />
-        </Form.Item>
-        <Form.Item name="skill_md" label="技能说明">
-          <TextArea rows={6} placeholder="Markdown 格式" />
         </Form.Item>
       </Form>
     </Modal>

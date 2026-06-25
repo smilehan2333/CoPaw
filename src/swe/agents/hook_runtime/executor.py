@@ -256,6 +256,13 @@ async def _execute_prompt_handler_once(
     ):
         model, _formatter = create_model_and_formatter(
             agent_id=context.agent_id or None,
+            trace_context={
+                "trace_id": context.trace_id,
+                "user_id": context.user_id,
+                "session_id": context.session_id,
+                "channel": context.channel,
+                "source_id": context.source_id,
+            },
         )
         response = await model(messages)
         text = await _extract_model_response_text(response)

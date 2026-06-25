@@ -12,10 +12,52 @@ import {
 } from "../types";
 import { uuid } from "@/components/agentscope-chat";
 import {
+  getToolMessageKey,
   maybeToolInput,
   maybeToolOutput,
   mergeToolMessages,
 } from "./ToolMessageMerge";
+
+const LIVE_TOOL_OUTPUT_MAX_BYTES = 64 * 1024;
+const LIVE_TOOL_OUTPUT_MAX_LINES = 2000;
+const LIVE_TOOL_OUTPUT_OMISSION_TEXT = "\n[早期实时输出已省略]\n";
+
+interface IToolOutputFrame {
+  object: "tool_output_frame";
+  tool_call_id: string;
+  tool_name?: string;
+  sequence: number;
+  source: "stdout" | "stderr" | "message";
+  text: string;
+  truncated?: boolean;
+}
+
+function trimLiveToolOutput(text: string) {
+  const encoded = new TextEncoder().encode(text);
+  let next = text;
+  let truncated = false;
+
+  if (encoded.length > LIVE_TOOL_OUTPUT_MAX_BYTES) {
+    const start = Math.max(0, encoded.length - LIVE_TOOL_OUTPUT_MAX_BYTES);
+    next = new TextDecoder().decode(encoded.slice(start));
+    truncated = true;
+  }
+
+  const lines = next.split(/(?<=\n)/);
+  if (lines.length > LIVE_TOOL_OUTPUT_MAX_LINES) {
+    next = lines.slice(-LIVE_TOOL_OUTPUT_MAX_LINES).join("");
+    truncated = true;
+  }
+
+  if (truncated && !next.startsWith(LIVE_TOOL_OUTPUT_OMISSION_TEXT)) {
+    next = `${LIVE_TOOL_OUTPUT_OMISSION_TEXT}${next}`;
+  }
+
+  return {
+    text: next,
+    truncated,
+  };
+}
 
 class AgentScopeRuntimeResponseBuilder {
   static mergeToolMessages(messages: IAgentScopeRuntimeMessage[]) {
@@ -144,6 +186,43 @@ class AgentScopeRuntimeResponseBuilder {
     });
   }
 
+  handleToolOutputFrame(data: IToolOutputFrame) {
+    this.data = produce(this.data, (draft) => {
+      const message = draft.output.find((item) => {
+        if (!maybeToolInput(item) || !item.content?.length) return false;
+        const content = item.content[0] as IDataContent;
+        return getToolMessageKey(content.data) === data.tool_call_id;
+      });
+
+      if (!message?.content?.length) {
+        return;
+      }
+
+      const content = message.content[0] as IDataContent<Record<string, any>>;
+      const currentText =
+        typeof content.data.live_output === "string"
+          ? content.data.live_output
+          : "";
+      const trimmed = trimLiveToolOutput(`${currentText}${data.text}`);
+      content.data.live_output = trimmed.text;
+      content.data.live_output_truncated =
+        Boolean(content.data.live_output_truncated) ||
+        Boolean(data.truncated) ||
+        trimmed.truncated;
+      content.data.live_output_frames = [
+        ...(Array.isArray(content.data.live_output_frames)
+          ? content.data.live_output_frames
+          : []),
+        {
+          sequence: data.sequence,
+          source: data.source,
+          text: data.text,
+          truncated: Boolean(data.truncated),
+        },
+      ].slice(-LIVE_TOOL_OUTPUT_MAX_LINES);
+    });
+  }
+
   handleError(data: IAgentScopeRuntimeMessage) {
     this.data = produce(this.data, (draft) => {
       draft.status = AgentScopeRuntimeRunStatus.Failed;
@@ -164,7 +243,11 @@ class AgentScopeRuntimeResponseBuilder {
   }
 
   handle(
-    data: IAgentScopeRuntimeResponse | IAgentScopeRuntimeMessage | IContent,
+    data:
+      | IAgentScopeRuntimeResponse
+      | IAgentScopeRuntimeMessage
+      | IContent
+      | IToolOutputFrame,
   ) {
     if (data.object === "response") {
       this.handleResponse(data);
@@ -174,6 +257,8 @@ class AgentScopeRuntimeResponseBuilder {
       this.handleMessage(data);
     } else if (data.object === "content") {
       this.handleContent(data);
+    } else if (data.object === "tool_output_frame") {
+      this.handleToolOutputFrame(data);
     } else {
       this.handleError(data);
     }

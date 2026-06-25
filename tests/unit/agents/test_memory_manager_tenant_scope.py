@@ -310,9 +310,10 @@ async def test_summary_memory_uses_tenant_scoped_tool_result_compact(
     manager.tenant_id = "tenant-a"
     manager.working_dir = str(Path("/tmp/ws"))
     manager._warn_if_version_mismatch = lambda: None
-    manager._prepare_model_formatter = lambda: None
-    manager.chat_model = object()
-    manager.formatter = object()
+    manager._create_execution_model_formatter = lambda **_kwargs: (
+        object(),
+        object(),
+    )
     manager.summary_toolkit = object()
     manager._reme = SimpleNamespace(
         summary_memory=AsyncMock(return_value="ok"),
@@ -357,9 +358,10 @@ async def test_compact_memory_uses_instance_tenant_id(
     manager.agent_id = "default"
     manager.tenant_id = "tenant-a"
     manager._warn_if_version_mismatch = lambda: None
-    manager._prepare_model_formatter = lambda: None
-    manager.chat_model = object()
-    manager.formatter = object()
+    manager._create_execution_model_formatter = lambda **_kwargs: (
+        object(),
+        object(),
+    )
     manager._reme = SimpleNamespace(
         compact_memory=AsyncMock(
             return_value={"is_valid": True, "history_compact": "ok"},

@@ -89,6 +89,9 @@ export function TenantSelector({
   // 用户模式：额外输入的租户ID（不在列表中的）
   const [extraTenantIdsText, setExtraTenantIdsText] = useState("");
 
+  // 用户是否正在编辑额外输入框（避免输入时被外部状态覆盖）
+  const [isEditingExtra, setIsEditingExtra] = useState(false);
+
   // 打开时自动加载租户信息
   useEffect(() => {
     setLoading(true);
@@ -215,9 +218,12 @@ export function TenantSelector({
       setSelectedInListTenantIds((current) =>
         current.length === 0 ? current : []
       );
-      setExtraTenantIdsText((current) =>
-        current === "" ? current : ""
-      );
+      // 用户正在编辑时不重置额外输入框
+      if (!isEditingExtra) {
+        setExtraTenantIdsText((current) =>
+          current === "" ? current : ""
+        );
+      }
       return;
     }
 
@@ -228,11 +234,14 @@ export function TenantSelector({
     setSelectedInListTenantIds((current) =>
       haveSameTenantIds(current, inList) ? current : inList
     );
-    setExtraTenantIdsText((current) => {
-      const nextText = extra.join("\n");
-      return current === nextText ? current : nextText;
-    });
-  }, [availableTenantIds, selectedTenantIds, targetMode]);
+    // 用户正在编辑时不重置额外输入框内容
+    if (!isEditingExtra) {
+      setExtraTenantIdsText((current) => {
+        const nextText = extra.join("\n");
+        return current === nextText ? current : nextText;
+      });
+    }
+  }, [availableTenantIds, selectedTenantIds, targetMode, isEditingExtra]);
 
   // 内部状态变更通知外部
   // 注意：只在 user_id 模式下，且 mergedTenantIds 真正变化时才通知
@@ -266,6 +275,7 @@ export function TenantSelector({
     setFilterText("");
     setSelectedInListTenantIds([]);
     setExtraTenantIdsText("");
+    setIsEditingExtra(false);
   }, []);
 
   // 全选/清空按钮（使用函数式更新避免依赖）
@@ -276,6 +286,7 @@ export function TenantSelector({
   const handleClearAll = useCallback(() => {
     setSelectedInListTenantIds([]);
     setExtraTenantIdsText("");
+    setIsEditingExtra(false);
   }, []);
 
   // 用户卡片点击（使用函数式更新）
@@ -508,7 +519,22 @@ export function TenantSelector({
                 <textarea
                   rows={3}
                   value={extraTenantIdsText}
-                  onChange={(e) => setExtraTenantIdsText(e.target.value)}
+                  onChange={(e) => {
+                    setIsEditingExtra(true);
+                    setExtraTenantIdsText(e.target.value);
+                  }}
+                  onBlur={() => {
+                    setIsEditingExtra(false);
+                    // 编辑结束后，解析并通知外部
+                    const parsed = parseManualTenantIds(extraTenantIdsText);
+                    const extraIds = parsed.filter((id) => !availableTenantIds.includes(id));
+                    const inListIds = parsed.filter((id) => availableTenantIds.includes(id));
+                    setSelectedInListTenantIds((prev) =>
+                      Array.from(new Set([...prev, ...inListIds]))
+                    );
+                    // 整理文本格式
+                    setExtraTenantIdsText(extraIds.join("\n"));
+                  }}
                   placeholder={t("tenantSelector.extraInputPlaceholder")}
                   className={styles.manualInput}
                 />

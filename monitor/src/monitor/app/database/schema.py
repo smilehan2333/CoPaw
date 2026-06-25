@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS swe_cron_jobs (
     task_session_id VARCHAR(64) DEFAULT '' COMMENT '关联会话ID',
     job_origin      VARCHAR(32) NOT NULL DEFAULT 'manual' COMMENT '任务来源: manual/subscription/system',
     subscription_key VARCHAR(255) DEFAULT '' COMMENT '订阅任务稳定分组ID',
+    skill_ids       VARCHAR(200) DEFAULT '' COMMENT '绑定技能ID，逗号分隔',
     meta            VARCHAR(4096) DEFAULT '' COMMENT '扩展元数据',
 
     -- 状态追踪
@@ -91,6 +92,12 @@ CRON_JOBS_EXTRA_COLUMNS: dict[str, str] = {
         "ADD COLUMN subscription_key VARCHAR(255) DEFAULT '' "
         "COMMENT '订阅任务稳定分组ID' "
         "AFTER job_origin"
+    ),
+    "skill_ids": (
+        "ALTER TABLE swe_cron_jobs "
+        "ADD COLUMN skill_ids VARCHAR(200) DEFAULT '' "
+        "COMMENT '绑定技能ID，逗号分隔' "
+        "AFTER subscription_key"
     ),
 }
 

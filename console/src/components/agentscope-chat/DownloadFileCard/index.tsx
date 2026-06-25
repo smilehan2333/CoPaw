@@ -1,14 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { message, Spin } from "antd";
 import { SparkDownloadLine } from "@agentscope-ai/icons";
 import FilePreviewModal from "../FilePreviewModal";
 import {
   extractDecodedFileNameFromUrl,
+  extractResultIdFromUrl,
+  extractTemplateIdFromUrl,
   getFileIcon,
   getFileType,
   isAutoPreviewHtmlLink,
+  isDynamicRenderHtmlLink,
   safeDecodeFileName,
 } from "../FilePreviewModal/fileUtils";
 import { useAutoPreviewHtml } from "../AutoPreviewHtmlContext";
+import { useDynamicRender } from "../DynamicRenderContext";
+import { dynamicRenderApi } from "@/api/modules/dynamicRender";
 
 export interface DownloadFileCardProps {
   url: string;
@@ -95,6 +101,10 @@ function DownloadFileCard(props: DownloadFileCardProps) {
   const autoPreviewOpenedRef = useRef(false);
   const { enabled: pageAutoPreviewEnabled, register: registerAutoPreview } =
     useAutoPreviewHtml();
+  const [isDownloadingGenerating, setIsDownloadingGenerating] = useState(false);
+  const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const { renderTemplate } = useDynamicRender();
+
 
   // Extract filename from URL if not provided
   const fileName = useMemo(() => {
@@ -111,17 +121,22 @@ function DownloadFileCard(props: DownloadFileCardProps) {
   }, [fileName]);
 
   const fileType = useMemo(() => getFileType(fileName), [fileName]);
+  // 动态渲染类型也支持自动预览
+  const isDynamicRender = useMemo(
+    () => isDynamicRenderHtmlLink(url),
+    [url],
+  );
   const shouldAutoPreview = useMemo(
     () =>
       autoPreview ??
-      (pageAutoPreviewEnabled && isAutoPreviewHtmlLink(url, fileName)),
-    [autoPreview, pageAutoPreviewEnabled, url, fileName],
+      (pageAutoPreviewEnabled && (isAutoPreviewHtmlLink(url, fileName) || isDynamicRender)),
+    [autoPreview, pageAutoPreviewEnabled, url, fileName, isDynamicRender],
   );
   const isAutoPreviewHtml = useMemo(
     () => isAutoPreviewHtmlLink(url, fileName),
     [fileName, url],
   );
-  const shouldEnableClickTracking = enableClickTracking || isAutoPreviewHtml;
+  const shouldEnableClickTracking = enableClickTracking || isAutoPreviewHtml || isDynamicRender;
 
   useEffect(() => {
     if (
@@ -155,15 +170,106 @@ function DownloadFileCard(props: DownloadFileCardProps) {
     setPreviewOpen(true);
   };
 
-  const handleDownload = (e: React.MouseEvent) => {
+  // 轮询获取动态渲染数据直到成功
+  const pollForData = async (
+    resultId: string,
+    templateId: string,
+    onSuccess: (res: Record<string, unknown>) => Promise<void>
+  ): Promise<void> => {
+    const res = await dynamicRenderApi.getRecordData(resultId, templateId);
+
+
+    if (res.code === '200') {
+      await onSuccess(res.data as Record<string, unknown>);
+      return;
+    }
+
+
+    // 文件正在生成中，显示提示并继续轮询
+    setIsDownloadingGenerating(true);
+    message.loading({
+      content: "文件正在生成中，内容准备完成后，会自动下载",
+      key: "fileGenerating",
+      duration: 0,
+    });
+
+
+    // 10秒后继续轮询
+    pollingTimerRef.current = setTimeout(() => {
+      pollForData(resultId, templateId, onSuccess);
+    }, 10000);
+  };
+
+  const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation(); // 阻止事件冒泡，避免打开弹窗
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    link.target = "_blank";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+
+    // 清理之前的轮询定时器
+    if (pollingTimerRef.current) {
+      clearTimeout(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+
+    // 动态渲染类型的特殊下载逻辑
+    if (isDynamicRender) {
+      try {
+        const resultId = extractResultIdFromUrl(url);
+        const templateId = extractTemplateIdFromUrl(url);
+
+        if (!resultId || !templateId) {
+          console.error("动态渲染链接缺少必要的参数");
+          return;
+        }
+
+        // 执行下载的函数
+        const performDownload = async (res: Record<string, unknown>) => {
+          const templateIdNum = parseInt(templateId, 10);
+          const renderedHtml = await renderTemplate(templateIdNum, res);
+
+          if (renderedHtml) {
+            // 将HTML内容转换为Blob进行下载
+            const blob = new Blob([renderedHtml], { type: "text/html" });
+            const blobUrl = URL.createObjectURL(blob);
+
+            const link = document.createElement("a");
+            link.href = blobUrl;
+            link.download = fileName.endsWith('.html') ? fileName : `${fileName}.html`;
+            link.target = "_blank";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            // 清理Blob URL
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+            setIsDownloadingGenerating(false);
+          } else {
+            console.error("模板渲染失败");
+            message.error("模板渲染失败");
+          }
+        };
+
+        // 使用轮询函数获取数据并下载
+        await pollForData(resultId, templateId, async (res) => {
+          message.success({
+            content: "文件已生成，正在下载...",
+            key: "fileGenerating",
+          });
+          await performDownload(res);
+        });
+      } catch (error) {
+        console.error("动态渲染下载失败:", error);
+        message.error("文件下载失败");
+        setIsDownloadingGenerating(false);
+      }
+    } else {
+      // 普通文件的下载逻辑
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
   };
 
   // 合并样式
@@ -177,6 +283,16 @@ function DownloadFileCard(props: DownloadFileCardProps) {
     ...hintStyle,
     color: fileType === "previewable" ? "#1677ff" : "#8c8c8c",
   };
+
+  // 组件卸载时清理轮询定时器
+  useEffect(() => {
+    return () => {
+      if (pollingTimerRef.current) {
+        clearTimeout(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const hintText = fileType === "previewable" ? "点击预览" : "不支持预览";
 

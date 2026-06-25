@@ -42,22 +42,25 @@ def mock_db():
 async def test_list_all_file_names_from_store(mock_db):
     """store 应查询所有 id+file_name 并返回字典列表。"""
     mock_db.fetch_all.return_value = [
-        {"id": 1, "file_name": "report.pdf"},
-        {"id": 2, "file_name": "data.xlsx"},
-        {"id": 3, "file_name": "image.png"},
+        {"id": 1, "file_name": "report.pdf", "template_flag": "main-1"},
+        {"id": 2, "file_name": "data.xlsx", "template_flag": None},
+        {"id": 3, "file_name": "image.png", "template_flag": None},
     ]
     store = AssetUploadRecordStore(mock_db)
 
     result = await store.list_all_file_names()
 
     assert result == [
-        {"id": 1, "file_name": "report.pdf"},
-        {"id": 2, "file_name": "data.xlsx"},
-        {"id": 3, "file_name": "image.png"},
+        {"id": 1, "file_name": "report.pdf", "template_flag": "main-1"},
+        {"id": 2, "file_name": "data.xlsx", "template_flag": None},
+        {"id": 3, "file_name": "image.png", "template_flag": None},
     ]
     mock_db.fetch_all.assert_awaited_once()
     query = mock_db.fetch_all.call_args[0][0]
-    assert "SELECT id, file_name FROM swe_asset_upload_record" in query
+    assert (
+        "SELECT id, file_name, template_flag FROM swe_asset_upload_record"
+        in query
+    )
 
 
 @pytest.mark.asyncio
@@ -82,6 +85,7 @@ async def test_list_records_from_store(mock_db):
             "file_size": 1024,
             "asset_path": "asset/test.pdf",
             "source_id": "src-1",
+            "template_flag": None,
             "created_at": None,
             "updated_at": None,
         },
@@ -102,8 +106,8 @@ async def test_list_records_from_store(mock_db):
 async def test_list_all_file_names_from_service(mock_db):
     """service 应调用 store 并返回 AssetUploadFileNameList。"""
     mock_db.fetch_all.return_value = [
-        {"id": 1, "file_name": "a.pdf"},
-        {"id": 2, "file_name": "b.xlsx"},
+        {"id": 1, "file_name": "a.pdf", "template_flag": "main-a"},
+        {"id": 2, "file_name": "b.xlsx", "template_flag": None},
     ]
     store = AssetUploadRecordStore(mock_db)
 
@@ -116,8 +120,10 @@ async def test_list_all_file_names_from_service(mock_db):
     assert len(result.data) == 2
     assert result.data[0].templateId == 1
     assert result.data[0].templateName == "a.pdf"
+    assert result.data[0].templateFlag == "main-a"
     assert result.data[1].templateId == 2
     assert result.data[1].templateName == "b.xlsx"
+    assert result.data[1].templateFlag is None
 
 
 # ---- 路由层测试 ----
@@ -130,7 +136,11 @@ def test_list_file_names_route_returns_names(monkeypatch):
         async def list_all_file_names(self):
             return AssetUploadFileNameList(
                 data=[
-                    TemplateItem(templateId=123, templateName="report.pdf"),
+                    TemplateItem(
+                        templateId=123,
+                        templateName="report.pdf",
+                        templateFlag="main-1",
+                    ),
                     TemplateItem(templateId=124, templateName="data.xlsx"),
                 ],
             )
@@ -153,6 +163,7 @@ def test_list_file_names_route_returns_names(monkeypatch):
     assert len(payload["data"]) == 2
     assert payload["data"][0]["templateId"] == 123
     assert payload["data"][0]["templateName"] == "report.pdf"
+    assert payload["data"][0]["templateFlag"] == "main-1"
 
 
 def test_query_records_route_returns_paginated(monkeypatch):

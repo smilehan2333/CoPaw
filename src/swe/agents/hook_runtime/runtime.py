@@ -6,8 +6,9 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from .conversation_snapshot import build_handler_conversation_snapshot
 from .executor import execute_handler
 from .merge import merge_hook_results
 from .models import (
@@ -48,6 +49,9 @@ class HookRuntime:
         context: HookContext,
         *,
         workspace_dir: Path,
+        conversation_snapshot_provider: (
+            Callable[[], Awaitable[dict[str, Any] | None]] | None
+        ) = None,
     ) -> MergedHookResult:
         started_at = time.perf_counter()
         plan = HookResolver(
@@ -57,12 +61,21 @@ class HookRuntime:
         ).resolve_event_plan(context)
         if not plan.handlers:
             return merge_hook_results(plan, [])
+        conversation_snapshot = await self._capture_conversation_snapshot(
+            plan,
+            conversation_snapshot_provider,
+        )
 
         async def _run(item):
             handler_started_at = time.perf_counter()
+            handler_context = self._context_for_handler(
+                context,
+                item.handler,
+                conversation_snapshot,
+            )
             result = await execute_handler(
                 item.handler,
-                context,
+                handler_context,
                 workspace_dir=workspace_dir,
             )
             result.order = item.order
@@ -88,6 +101,41 @@ class HookRuntime:
         except Exception as exc:
             logger.warning("Failed to emit hook telemetry: %s", exc)
         return merged
+
+    async def _capture_conversation_snapshot(
+        self,
+        plan: EffectiveHookPlan,
+        provider: Callable[[], Awaitable[dict[str, Any] | None]] | None,
+    ) -> dict[str, Any] | None:
+        if not any(
+            item.handler.include_conversation_snapshot
+            for item in plan.handlers
+        ):
+            return None
+        if provider is None:
+            return None
+        try:
+            return await provider()
+        except Exception as exc:
+            logger.warning(
+                "Failed to capture hook conversation snapshot: %s",
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _context_for_handler(
+        context: HookContext,
+        handler,
+        conversation_snapshot: dict[str, Any] | None,
+    ) -> HookContext:
+        if not handler.include_conversation_snapshot:
+            return context
+        snapshot_payload = build_handler_conversation_snapshot(
+            conversation_snapshot,
+            limit=handler.conversation_snapshot_limit,
+        )
+        return context.model_copy(update=snapshot_payload)
 
     def _mark_once_executed(self, context: HookContext, handlers) -> None:
         for item in handlers:

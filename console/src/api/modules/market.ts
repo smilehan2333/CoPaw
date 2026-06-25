@@ -6,10 +6,11 @@ import type {
   FileTreeNode,
   MySkill,
 } from "./mySkills";
-import type { DistributionRecord, RecallResultItem, RecallResponse } from "../types";
+import type { DistributionRecord, RecallResponse } from "../types";
 
 export interface MarketSkill {
   item_id: string;
+  skill_id?: string | null;
   name: string;
   skill_name?: string;
   chinese_name?: string;
@@ -57,6 +58,9 @@ export interface PublishSkillRequest {
   overwrite?: boolean;
   // 用户工作区版本号，用于版本快照的 source_user_version
   source_user_version?: string;
+  // 同步模式：直接传递用户已有的 skill_id 和 cn_name，无需再解析
+  skill_id?: string;
+  cn_name?: string;
 }
 
 export interface DistributeRequest {
@@ -90,6 +94,8 @@ async function _uploadZipToMarket(
     target_name?: string;
     rename_map?: Record<string, string>;
     category_id?: number;
+    cn_name?: string;
+    skill_id?: string;
   }
 ): Promise<Record<string, unknown>> {
   const formData = new FormData();
@@ -110,6 +116,12 @@ async function _uploadZipToMarket(
   }
   if (options?.category_id !== undefined) {
     params.set("category_id", String(options.category_id));
+  }
+  if (options?.cn_name) {
+    params.set("cn_name", options.cn_name);
+  }
+  if (options?.skill_id) {
+    params.set("skill_id", options.skill_id);
   }
   const qs = params.toString();
   const url = getApiUrl(`${endpoint}${qs ? `?${qs}` : ""}`);
@@ -263,6 +275,49 @@ export const marketApi = {
     );
   },
 
+  parseSkillZip: async (
+    sourceId: string,
+    file: File,
+    marketMode?: boolean
+  ): Promise<{
+    skill_name?: string;
+    cn_name?: string;
+    skill_id?: string;
+    description?: string;
+    exists?: boolean;
+    error?: string;
+    skill_id_reused?: boolean;
+    skill_id_conflict?: string;
+    skill_id_used_count?: number;
+    skill_id_used_by?: string[];
+  }> => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    let url = getApiUrl("/market/skills/parse-zip");
+    if (marketMode) {
+      url += "?market_mode=true";
+    }
+    const headers = Object.fromEntries(
+      (mergeHeaders({
+        "X-Source-Id": sourceId,
+      }).headers as Headers).entries(),
+    );
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: new Headers(headers),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return { error: text };
+    }
+
+    return await response.json();
+  },
+
   uploadSkillToWorkspace: async (
     sourceId: string,
     file: File,
@@ -272,6 +327,7 @@ export const marketApi = {
       target_name?: string;
       rename_map?: Record<string, string>;
       category_id?: number;
+      cn_name?: string;
     }
   ): Promise<{
     imported: string[];
@@ -279,6 +335,8 @@ export const marketApi = {
     enabled: boolean;
     name?: string;
     description?: string;
+    skill_id?: string;
+    cn_name?: string;
     conflicts?: Array<{
       reason: string;
       skill_name: string;
@@ -297,6 +355,8 @@ export const marketApi = {
       enabled: boolean;
       name?: string;
       description?: string;
+      skill_id?: string;
+      cn_name?: string;
       conflicts?: Array<{
         reason: string;
         skill_name: string;
@@ -311,6 +371,8 @@ export const marketApi = {
     options?: {
       category_id?: number;
       overwrite?: boolean;
+      cn_name?: string;
+      skill_id?: string;
     }
   ): Promise<{
     imported: string[];
@@ -378,6 +440,35 @@ export const marketApi = {
       `/market/skills/${itemId}/recall`,
       opts
     );
+  },
+
+  // 更新技能中文名
+  updateSkillCnName: async (
+    sourceId: string,
+    itemId: string,
+    data: {
+      skill_id: string;
+      chinese_name: string;
+      sync_to_users?: boolean;
+      target_user_ids?: string[];
+    }
+  ): Promise<{
+    success: boolean;
+    market_updated: boolean;
+    synced_users: number;
+    skipped_users: number;
+    errors: Array<{ user_id: string; reason: string }>;
+  }> => {
+    const opts: RequestInit = {
+      method: "PATCH",
+      ...(mergeHeaders({
+        "Content-Type": "application/json",
+        "X-Source-Id": sourceId,
+        "X-Manager": "true",
+      })),
+      body: JSON.stringify(data),
+    };
+    return request(`/market/skills/${itemId}`, opts);
   },
 
   listUserMarketSkills: async (

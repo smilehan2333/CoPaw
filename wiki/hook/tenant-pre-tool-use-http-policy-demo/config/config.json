@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "PreToolUse": [
+        {
+          "id": "tenant-shell-remote-policy",
+          "matcher": {
+            "tools": ["execute_shell_command"]
+          },
+          "hooks": [
+            {
+              "id": "remote-shell-policy",
+              "type": "http",
+              "url": "http://127.0.0.1:9100/hooks/pre-tool-policy",
+              "headers": {
+                "X-Hook-Source": "swe"
+              },
+              "headerSecretRefs": {
+                "Authorization": "HOOK_AUTH_TOKEN"
+              },
+              "timeout": 5,
+              "statusMessage": "正在调用租户级远端工具策略",
+              "failPolicy": "block"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

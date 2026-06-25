@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Dict, Literal, Optional
 
@@ -36,6 +37,9 @@ _CRONTAB_NUM_TO_NAME: dict[str, str] = {
 
 DEFAULT_CRON_TIMEOUT_SECONDS = 7200
 DEFAULT_CRON_MISFIRE_GRACE_SECONDS = 300
+MAX_CRON_SKILL_IDS_LENGTH = 200
+_SKILL_ID_SAFE_CHARS = frozenset("_.:-")
+_SKILL_ID_SPLIT_PATTERN = re.compile(r"[,\s]+")
 
 
 def _crontab_dow_to_name(field: str) -> str:
@@ -57,6 +61,49 @@ def _crontab_dow_to_name(field: str) -> str:
         return _CRONTAB_NUM_TO_NAME.get(tok, tok)
 
     return ",".join(_convert_token(t) for t in field.split(","))
+
+
+def normalize_cron_skill_ids(value: Any) -> str:
+    """将技能 ID 列表归一化为逗号分隔字符串。"""
+    if value is None:
+        return ""
+
+    raw_items = value if isinstance(value, list) else [value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        for item in _SKILL_ID_SPLIT_PATTERN.split(str(raw_item)):
+            skill_id = item.strip()
+            if not skill_id:
+                continue
+            if not _is_skill_id(skill_id):
+                raise ValueError(f"invalid skill_ids item: {skill_id}")
+            if skill_id not in seen:
+                seen.add(skill_id)
+                normalized.append(skill_id)
+
+    result = ",".join(normalized)
+    if len(result) > MAX_CRON_SKILL_IDS_LENGTH:
+        raise ValueError("skill_ids total length must be <= 200")
+    return result
+
+
+def cron_skill_ids_contains(skill_ids: Any, skill_id: str) -> bool:
+    """按逗号边界精确判断技能 ID 是否存在。"""
+    try:
+        normalized = normalize_cron_skill_ids(skill_ids)
+        target = normalize_cron_skill_ids(skill_id)
+    except ValueError:
+        return False
+    if not normalized or not target or "," in target:
+        return False
+    return f",{target}," in f",{normalized},"
+
+
+def _is_skill_id(value: str) -> bool:
+    return bool(value) and all(
+        char.isalnum() or char in _SKILL_ID_SAFE_CHARS for char in value
+    )
 
 
 class ScheduleSpec(BaseModel):
@@ -166,10 +213,16 @@ class CronJobSpec(BaseModel):
     text: Optional[str] = None
     request: Optional[CronJobRequest] = None
     model_slot: Optional[ModelSlotConfig] = None
+    skill_ids: str = ""
     dispatch: DispatchSpec
 
     runtime: JobRuntimeSpec = Field(default_factory=JobRuntimeSpec)
     meta: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("skill_ids", mode="before")
+    @classmethod
+    def _normalize_skill_ids(cls, value: Any) -> str:
+        return normalize_cron_skill_ids(value)
 
     @model_validator(mode="after")
     def _validate_task_type_fields(self) -> "CronJobSpec":

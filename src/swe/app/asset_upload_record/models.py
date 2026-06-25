@@ -15,6 +15,7 @@ class AssetUploadRecord(BaseModel):
     file_size: int = Field(..., ge=0)
     asset_path: str = Field(..., min_length=1, max_length=512)
     source_id: Optional[str] = Field(default=None, max_length=64)
+    template_flag: Optional[str] = Field(default=None, max_length=64)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -26,6 +27,7 @@ class AssetUploadRecordCreate(BaseModel):
     file_size: int = Field(..., ge=0)
     asset_path: str = Field(..., min_length=1, max_length=512)
     source_id: Optional[str] = Field(default=None, max_length=64)
+    template_flag: Optional[str] = Field(default=None, max_length=64)
 
 
 class PaginatedAssetUploadRecords(BaseModel):
@@ -42,6 +44,7 @@ class TemplateItem(BaseModel):
 
     templateId: int
     templateName: str
+    templateFlag: Optional[str] = None
 
 
 class AssetUploadFileNameList(BaseModel):

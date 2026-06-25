@@ -8,16 +8,22 @@ import hashlib
 import json
 import logging
 import re
+from collections import OrderedDict
 from pathlib import PurePath
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 from ...agents.model_factory import create_model_and_formatter
+from ...tracing import capture_current_trace_context
+from ...config.context import get_current_effective_tenant_id
+from ...app.agent_context import get_current_agent_id
+from ...runtime_cache import dispose_cached_model, dispose_cached_model_async
 
 logger = logging.getLogger(__name__)
 
 MODEL_SUMMARY_TIMEOUT_SECONDS = 0.6
 _MODEL_SUMMARY_CACHE_LIMIT = 256
+_SUMMARY_MODEL_CACHE_LIMIT = 32
 
 TOOL_DISPLAY_NAMES = {
     "read_file": "读取文件",
@@ -38,8 +44,34 @@ TOOL_DISPLAY_NAMES = {
 }
 
 _model_summary_cache: dict[str, str] = {}
-_summary_model = None
-_summary_formatter = None
+_summary_models_by_trace: "OrderedDict[tuple[str, tuple[str, str]], Any]" = (
+    OrderedDict()
+)
+_summary_model_lock = asyncio.Lock()
+
+
+def _runtime_scope_key() -> tuple[str, str]:
+    """返回影响摘要模型解析的运行时作用域。"""
+    tenant_id = str(get_current_effective_tenant_id() or "")
+    agent_id = str(get_current_agent_id() or "")
+    return tenant_id, agent_id
+
+
+def _summary_trace_cache_key(
+    trace_context: Optional[dict[str, Any]],
+) -> tuple[str, tuple[str, str]]:
+    """按 trace 和运行时作用域生成摘要模型缓存键。"""
+    trace_id = str((trace_context or {}).get("trace_id") or "").strip()
+    return (trace_id or "__no_trace__"), _runtime_scope_key()
+
+
+def reset_summary_caches() -> None:
+    """清理摘要生成相关缓存。"""
+    cached_models = list(_summary_models_by_trace.values())
+    _summary_models_by_trace.clear()
+    _model_summary_cache.clear()
+    for model in cached_models:
+        dispose_cached_model(model)
 
 
 def get_tool_display_name(
@@ -362,15 +394,33 @@ def _sanitize_model_summary(summary: str) -> str:
     return _truncate_text(summary or "已完成", 80)
 
 
-def _get_summary_model():
-    global _summary_model, _summary_formatter
-    if _summary_model is None or _summary_formatter is None:
-        _summary_model, _summary_formatter = create_model_and_formatter()
-    return _summary_model, _summary_formatter
+async def _get_summary_model():
+    trace_context = capture_current_trace_context()
+    cache_key = _summary_trace_cache_key(trace_context)
+    model = _summary_models_by_trace.get(cache_key)
+    if model is not None:
+        _summary_models_by_trace.move_to_end(cache_key)
+        return model
+
+    async with _summary_model_lock:
+        model = _summary_models_by_trace.get(cache_key)
+        if model is None:
+            model, _ = create_model_and_formatter(
+                trace_context=trace_context,
+            )
+            _summary_models_by_trace[cache_key] = model
+            while len(_summary_models_by_trace) > _SUMMARY_MODEL_CACHE_LIMIT:
+                _, evicted_model = _summary_models_by_trace.popitem(
+                    last=False,
+                )
+                await dispose_cached_model_async(evicted_model)
+        else:
+            _summary_models_by_trace.move_to_end(cache_key)
+    return model
 
 
 async def _run_summary_model(prompt: str) -> str:
-    model, _ = _get_summary_model()
+    model = await _get_summary_model()
     messages = [
         {
             "role": "system",

@@ -269,6 +269,48 @@ describe("BusinessOverview trend chart", () => {
     ]);
   });
 
+  it("scales bars and line points against nice axis maxima instead of raw maxima", () => {
+    const trendSvg = buildTrendSvgData([
+      { date: "2026-05-19", users: 5, calls: 5 },
+      { date: "2026-05-20", users: 6, calls: 6 },
+    ]);
+
+    expect(trendSvg.leftAxisTicks.map((tick) => tick.label)).toEqual([
+      "10",
+      "8",
+      "6",
+      "4",
+      "2",
+      "0",
+    ]);
+    expect(trendSvg.rightAxisTicks.map((tick) => tick.label)).toEqual([
+      "10",
+      "8",
+      "6",
+      "4",
+      "2",
+      "0",
+    ]);
+    expect(trendSvg.bars[0]?.y).toBeCloseTo(109, 3);
+    expect(trendSvg.points[0]?.y).toBeCloseTo(109, 3);
+  });
+
+  it("uses a tighter nice axis for low-hundreds trend values", () => {
+    const trendSvg = buildTrendSvgData([
+      { date: "2026-05-19", users: 12, calls: 202 },
+      { date: "2026-05-20", users: 10, calls: 180 },
+    ]);
+
+    expect(trendSvg.rightAxisTicks.map((tick) => tick.label)).toEqual([
+      "250",
+      "200",
+      "150",
+      "100",
+      "50",
+      "0",
+    ]);
+  });
+
   it("shows the real values when hovering a trend column", async () => {
     renderBusinessOverview();
 
@@ -407,5 +449,105 @@ describe("BusinessOverview trend chart", () => {
     expect(htmlPreviewEventsApiMock.getLists).toHaveBeenLastCalledWith(
       expect.objectContaining({ page: 1, pageSize: 20 }),
     );
+  });
+
+  it("auto-loads more skills when the first page does not fill a scrollable viewport", async () => {
+    tracingApiMock.getSkills
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 10 }, (_, index) => ({
+          skill_name: `skill-${index + 1}`,
+          count: index + 1,
+          avg_duration_ms: 100,
+        })),
+        total: 14,
+        page: 1,
+        page_size: 10,
+      })
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 4 }, (_, index) => ({
+          skill_name: `skill-${index + 11}`,
+          count: index + 11,
+          avg_duration_ms: 100,
+        })),
+        total: 14,
+        page: 2,
+        page_size: 10,
+      });
+
+    renderBusinessOverview();
+
+    await waitFor(() => {
+      expect(tracingApiMock.getSkills).toHaveBeenNthCalledWith(
+        1,
+        1,
+        10,
+        expect.any(Object),
+      );
+    });
+
+    await waitFor(() => {
+      expect(tracingApiMock.getSkills).toHaveBeenNthCalledWith(
+        2,
+        2,
+        10,
+        expect.any(Object),
+      );
+    });
+
+    expect(await screen.findByText("skill-14")).toBeInTheDocument();
+  });
+
+  it("auto-loads more active users when the first page does not fill a scrollable viewport", async () => {
+    tracingApiMock.getUsers
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 10 }, (_, index) => ({
+          user_id: `user-${index + 1}`,
+          user_name: `用户${index + 1}`,
+          bbk_id: "100",
+          manual_calls: index + 1,
+          cron_executions: 0,
+          cron_success: 0,
+          cron_reads: 0,
+        })),
+        total: 14,
+        page: 1,
+        page_size: 10,
+      })
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 4 }, (_, index) => ({
+          user_id: `user-${index + 11}`,
+          user_name: `用户${index + 11}`,
+          bbk_id: "100",
+          manual_calls: index + 11,
+          cron_executions: 0,
+          cron_success: 0,
+          cron_reads: 0,
+        })),
+        total: 14,
+        page: 2,
+        page_size: 10,
+      });
+
+    renderBusinessOverview();
+
+    await waitFor(() => {
+      expect(tracingApiMock.getUsers).toHaveBeenNthCalledWith(
+        1,
+        1,
+        10,
+        expect.any(Object),
+      );
+    });
+
+    await waitFor(() => {
+      expect(tracingApiMock.getUsers).toHaveBeenNthCalledWith(
+        2,
+        2,
+        10,
+        expect.any(Object),
+      );
+    });
+
+    expect(await screen.findByText(/用户14/)).toBeInTheDocument();
   });
 });

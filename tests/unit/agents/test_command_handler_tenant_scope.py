@@ -49,3 +49,14 @@ async def test_handle_command_history_uses_tenant_scoped_agent_config(
     assert result.content[0]["text"] == (
         "history payload\n\n---\n\n- Use /message <index> to view full message content"
     )
+
+
+def test_command_handler_reads_summary_scope_from_request_context() -> None:
+    handler = CommandHandler(
+        agent_name="agent",
+        memory=SimpleNamespace(),
+        memory_manager=None,
+        request_context={"session_id": "session-123"},
+    )
+
+    assert handler._summary_task_scope_id() == "session-123"

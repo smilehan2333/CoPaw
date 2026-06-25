@@ -5,13 +5,20 @@ import asyncio
 import json
 import logging
 import re
-from typing import List, Optional
-
-from agentscope.model import ChatModelBase
+from collections import OrderedDict
+from typing import Any, List, Optional
 
 from swe.agents.model_factory import create_model_and_formatter
+from swe.tracing import capture_current_trace_context
+from swe.config.context import get_current_effective_tenant_id
+from swe.app.agent_context import get_current_agent_id
+from swe.runtime_cache import (
+    dispose_cached_model,
+    dispose_cached_model_async,
+)
 
 logger = logging.getLogger(__name__)
+_MODEL_CACHE_LIMIT = 32
 
 # 建议生成的 Prompt 模板
 SUGGESTION_PROMPT_TEMPLATE = """根据以下对话，生成{max_count}个用户可能想问的后续问题。
@@ -92,23 +99,60 @@ def extract_key_content(text: str, max_length: int = 500) -> str:
 class SuggestionService:
     """建议生成服务，管理模型实例和生成逻辑."""
 
-    _model: Optional[ChatModelBase] = None
+    _models_by_trace: "OrderedDict[tuple[str, tuple[str, str]], Any]" = (
+        OrderedDict()
+    )
     _lock = asyncio.Lock()
 
+    @staticmethod
+    def _runtime_scope_key() -> tuple[str, str]:
+        """返回影响模型解析的运行时作用域。"""
+        tenant_id = str(get_current_effective_tenant_id() or "")
+        agent_id = str(get_current_agent_id() or "")
+        return tenant_id, agent_id
+
     @classmethod
-    async def get_model(cls) -> ChatModelBase:
-        """获取或创建模型实例（懒加载单例）."""
-        if cls._model is None:
-            async with cls._lock:
-                if cls._model is None:
-                    model, _ = create_model_and_formatter()
-                    cls._model = model
-        return cls._model
+    def _trace_cache_key(
+        cls,
+        trace_context: Optional[dict[str, Any]],
+    ) -> tuple[str, tuple[str, str]]:
+        """生成建议模型缓存键。"""
+        trace_id = str((trace_context or {}).get("trace_id") or "").strip()
+        return (trace_id or "__no_trace__"), cls._runtime_scope_key()
+
+    @classmethod
+    async def get_model(cls):
+        """获取当前 trace 对应的模型实例。"""
+        trace_context = capture_current_trace_context()
+        cache_key = cls._trace_cache_key(trace_context)
+        model = cls._models_by_trace.get(cache_key)
+        if model is not None:
+            cls._models_by_trace.move_to_end(cache_key)
+            return model
+
+        async with cls._lock:
+            model = cls._models_by_trace.get(cache_key)
+            if model is None:
+                model, _ = create_model_and_formatter(
+                    trace_context=trace_context,
+                )
+                cls._models_by_trace[cache_key] = model
+                while len(cls._models_by_trace) > _MODEL_CACHE_LIMIT:
+                    _, evicted_model = cls._models_by_trace.popitem(
+                        last=False,
+                    )
+                    await dispose_cached_model_async(evicted_model)
+            else:
+                cls._models_by_trace.move_to_end(cache_key)
+        return model
 
     @classmethod
     def reset_model(cls) -> None:
-        """重置模型实例（用于配置变更时）."""
-        cls._model = None
+        """清理建议模型缓存，用于配置刷新或测试隔离。"""
+        cached_models = list(cls._models_by_trace.values())
+        cls._models_by_trace.clear()
+        for model in cached_models:
+            dispose_cached_model(model)
 
 
 def _extract_text_from_response(response) -> str:

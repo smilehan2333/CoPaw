@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import {
+  AgentScopeRuntimeContentType,
   AgentScopeRuntimeMessageType,
+  AgentScopeRuntimeRunStatus,
+  IAgentScopeRuntimeMessage,
   IAgentScopeRuntimeResponse,
 } from "../types";
 import AgentScopeRuntimeResponseBuilder from "./Builder";
@@ -13,6 +16,8 @@ import Actions from "./Actions";
 import Suggestions from "./Suggestions";
 import RetryStatusMessage from "./RetryStatusMessage";
 import { getCompletedReasoningFallbackText } from "./reasoningFallback";
+import ProcessDisclosure from "./ProcessDisclosure";
+import { resolveToolName } from "./ToolTitle";
 // import { Avatar, Flex } from "antd";
 // import { useChatAnywhereOptions } from "../../Context/ChatAnywhereOptionsContext";
 
@@ -26,6 +31,224 @@ type RetryMetadata = {
 function getRetryStatus(item: unknown) {
   const metadata = (item as { metadata?: RetryMetadata }).metadata;
   return metadata?.retry_status || metadata?.metadata?.retry_status;
+}
+
+function isGeneratingStatus(status: unknown) {
+  return (
+    status === AgentScopeRuntimeRunStatus.Created ||
+    status === AgentScopeRuntimeRunStatus.InProgress
+  );
+}
+
+function messageHasGeneratingContent(message: IAgentScopeRuntimeMessage) {
+  if (isGeneratingStatus(message.status)) return true;
+  return Boolean(
+    message.content?.some((content) => isGeneratingStatus(content.status)),
+  );
+}
+
+function responseReadyForProcessDisclosure(
+  response: IAgentScopeRuntimeResponse,
+  messages: IAgentScopeRuntimeMessage[],
+) {
+  if (AgentScopeRuntimeResponseBuilder.maybeGenerating(response)) return false;
+  if (messages.some(messageHasGeneratingContent)) return false;
+
+  return (
+    AgentScopeRuntimeResponseBuilder.maybeDone(response) ||
+    String(response.status) === "idle"
+  );
+}
+
+function hasVisibleAnswerContent(message: IAgentScopeRuntimeMessage) {
+  if (message.type !== AgentScopeRuntimeMessageType.MESSAGE) return false;
+  if (getRetryStatus(message)) return false;
+
+  return Boolean(
+    message.content?.some((content) => {
+      switch (content.type) {
+        case AgentScopeRuntimeContentType.TEXT:
+          return Boolean(content.text?.trim());
+        case AgentScopeRuntimeContentType.REFUSAL:
+          return Boolean(content.refusal?.trim());
+        case AgentScopeRuntimeContentType.IMAGE:
+          return Boolean(content.image_url);
+        case AgentScopeRuntimeContentType.VIDEO:
+          return Boolean(content.video_url);
+        case AgentScopeRuntimeContentType.FILE:
+          return Boolean(
+            content.file_url || content.file_name || content.fileName,
+          );
+        case AgentScopeRuntimeContentType.AUDIO:
+          return Boolean(content.audio_url || content.data);
+        case AgentScopeRuntimeContentType.DATA:
+          return Boolean(content.data);
+        default:
+          return false;
+      }
+    }),
+  );
+}
+
+function findLastVisibleAnswerMessageIndex(
+  messages: IAgentScopeRuntimeMessage[],
+) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (hasVisibleAnswerContent(messages[index])) return index;
+  }
+
+  return -1;
+}
+
+function isToolMessageType(type: AgentScopeRuntimeMessageType) {
+  return [
+    AgentScopeRuntimeMessageType.PLUGIN_CALL,
+    AgentScopeRuntimeMessageType.PLUGIN_CALL_OUTPUT,
+    AgentScopeRuntimeMessageType.MCP_CALL,
+    AgentScopeRuntimeMessageType.MCP_CALL_OUTPUT,
+  ].includes(type);
+}
+
+const HIDDEN_PROCESS_TOOL_NAMES = new Set(["update_task_progress"]);
+
+function isHiddenToolMessage(message: IAgentScopeRuntimeMessage) {
+  if (!isToolMessageType(message.type)) return false;
+
+  return Boolean(
+    message.content?.some((content) => {
+      if (content.type !== AgentScopeRuntimeContentType.DATA) return false;
+      const data = content.data as Record<string, unknown>;
+      const toolName = resolveToolName(data);
+      return toolName ? HIDDEN_PROCESS_TOOL_NAMES.has(toolName) : false;
+    }),
+  );
+}
+
+function shouldFoldIntoProcessDisclosure(message: IAgentScopeRuntimeMessage) {
+  return (
+    message.type !== AgentScopeRuntimeMessageType.HEARTBEAT &&
+    !isHiddenToolMessage(message)
+  );
+}
+
+function shouldCountAsProcessStep(message: IAgentScopeRuntimeMessage) {
+  return (
+    message.type === AgentScopeRuntimeMessageType.REASONING ||
+    message.type === AgentScopeRuntimeMessageType.ERROR ||
+    isToolMessageType(message.type) ||
+    Boolean(getRetryStatus(message))
+  );
+}
+
+function messageHasFailedProcess(message: IAgentScopeRuntimeMessage) {
+  if (message.status === AgentScopeRuntimeRunStatus.Failed) return true;
+  return Boolean(
+    message.content?.some((content) => {
+      if (content.type !== AgentScopeRuntimeContentType.DATA) return false;
+      const data = content.data as Record<string, unknown>;
+      return (
+        data.tool_status === "failed" ||
+        Boolean(data.tool_error) ||
+        data.isError === true
+      );
+    }),
+  );
+}
+
+function formatDurationSeconds(totalSeconds: number) {
+  if (totalSeconds < 1) return "<1s";
+
+  const seconds = Math.round(totalSeconds);
+  if (seconds < 60) return `${seconds}s`;
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainingSeconds > 0
+      ? `${minutes}m ${remainingSeconds}s`
+      : `${minutes}m`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function parseTimestampSeconds(value: unknown) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return undefined;
+    return value >= 1_000_000_000_000 ? value / 1000 : value;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+
+    const numericValue = Number(trimmed);
+    if (Number.isFinite(numericValue)) {
+      return numericValue >= 1_000_000_000_000
+        ? numericValue / 1000
+        : numericValue;
+    }
+
+    const dateValue = Date.parse(trimmed);
+    if (Number.isNaN(dateValue)) return undefined;
+    return dateValue / 1000;
+  }
+
+  return undefined;
+}
+
+function getMessageTimestampSeconds(message: IAgentScopeRuntimeMessage) {
+  return parseTimestampSeconds(
+    (message as IAgentScopeRuntimeMessage & { timestamp?: unknown }).timestamp,
+  );
+}
+
+function getMessagesDurationText(messages: IAgentScopeRuntimeMessage[]) {
+  const timestamps = messages
+    .map(getMessageTimestampSeconds)
+    .filter((timestamp): timestamp is number => timestamp !== undefined);
+
+  if (timestamps.length < 2) return undefined;
+
+  const durationSeconds = timestamps[timestamps.length - 1] - timestamps[0];
+  if (!Number.isFinite(durationSeconds) || durationSeconds < 0) {
+    return undefined;
+  }
+
+  return formatDurationSeconds(durationSeconds);
+}
+
+function renderResponseItem(item: IAgentScopeRuntimeMessage) {
+  switch (item.type) {
+    case AgentScopeRuntimeMessageType.MESSAGE: {
+      // 检测重试状态，使用专用卡片渲染。
+      // SSE 流式路径: metadata.retry_status
+      // 历史加载路径: metadata.metadata.retry_status（后端嵌套）
+      const retryStatus = getRetryStatus(item);
+      if (retryStatus) {
+        return <RetryStatusMessage key={item.id} data={item} />;
+      }
+      return <Message key={item.id} data={item} />;
+    }
+    case AgentScopeRuntimeMessageType.PLUGIN_CALL:
+    case AgentScopeRuntimeMessageType.PLUGIN_CALL_OUTPUT:
+    case AgentScopeRuntimeMessageType.MCP_CALL:
+    case AgentScopeRuntimeMessageType.MCP_CALL_OUTPUT:
+      return <Tool key={item.id} data={item} />;
+    case AgentScopeRuntimeMessageType.MCP_APPROVAL_REQUEST:
+      return <Tool key={item.id} data={item} isApproval={true} />;
+    case AgentScopeRuntimeMessageType.REASONING:
+      return <Reasoning key={item.id} data={item} />;
+    case AgentScopeRuntimeMessageType.ERROR:
+      return <Error key={item.id} data={item} />;
+    case AgentScopeRuntimeMessageType.HEARTBEAT:
+      return null;
+    default:
+      console.warn(`[WIP] Unknown message type: ${item.type}`);
+      return null;
+  }
 }
 
 export default function AgentScopeRuntimeResponseCard(props: {
@@ -42,6 +265,53 @@ export default function AgentScopeRuntimeResponseCard(props: {
   const reasoningFallbackText = useMemo(() => {
     return getCompletedReasoningFallbackText(props.data, messages);
   }, [messages, props.data]);
+  const groupedMessages = useMemo(() => {
+    const canCollapseProcess = responseReadyForProcessDisclosure(
+      props.data,
+      messages,
+    );
+    const finalAnswerIndex = reasoningFallbackText
+      ? -1
+      : findLastVisibleAnswerMessageIndex(messages);
+    const hasAnswer = Boolean(reasoningFallbackText || finalAnswerIndex >= 0);
+
+    if (!canCollapseProcess || !hasAnswer) {
+      return {
+        process: [] as IAgentScopeRuntimeMessage[],
+        direct: messages,
+        failedProcessCount: 0,
+        processStepCount: 0,
+        toolCallCount: 0,
+      };
+    }
+
+    const process: IAgentScopeRuntimeMessage[] = [];
+    const direct: IAgentScopeRuntimeMessage[] = [];
+
+    messages.forEach((message) => {
+      if (finalAnswerIndex >= 0 && message === messages[finalAnswerIndex]) {
+        direct.push(message);
+        return;
+      }
+
+      if (shouldFoldIntoProcessDisclosure(message)) {
+        process.push(message);
+      }
+    });
+
+    return {
+      process,
+      direct,
+      failedProcessCount: process.filter(messageHasFailedProcess).length,
+      processStepCount: process.filter(shouldCountAsProcessStep).length,
+      toolCallCount: process.filter((message) =>
+        isToolMessageType(message.type),
+      ).length,
+    };
+  }, [messages, props.data, reasoningFallbackText]);
+  const durationText = useMemo(() => {
+    return getMessagesDurationText(messages);
+  }, [messages]);
 
   if (
     !messages?.length &&
@@ -57,36 +327,22 @@ export default function AgentScopeRuntimeResponseCard(props: {
           {nick && <span>{nick as string}</span>}
         </Flex>
       )} */}
-      {messages.map((item) => {
-        switch (item.type) {
-          case AgentScopeRuntimeMessageType.MESSAGE: {
-            // 检测重试状态消息，使用专用卡片渲染
-            // SSE 流式路径: metadata.retry_status
-            // 历史加载路径: metadata.metadata.retry_status（后端嵌套）
-            const retryStatus = getRetryStatus(item);
-            if (retryStatus) {
-              return <RetryStatusMessage key={item.id} data={item} />;
-            }
-            return <Message key={item.id} data={item} />;
+      {groupedMessages.process.length > 0 && (
+        <ProcessDisclosure
+          durationText={durationText}
+          failedCount={groupedMessages.failedProcessCount}
+          processCount={groupedMessages.processStepCount}
+          toolCallCount={groupedMessages.toolCallCount}
+          status={
+            props.data.status === AgentScopeRuntimeRunStatus.Canceled
+              ? "canceled"
+              : "completed"
           }
-          case AgentScopeRuntimeMessageType.PLUGIN_CALL:
-          case AgentScopeRuntimeMessageType.PLUGIN_CALL_OUTPUT:
-          case AgentScopeRuntimeMessageType.MCP_CALL:
-          case AgentScopeRuntimeMessageType.MCP_CALL_OUTPUT:
-            return <Tool key={item.id} data={item} />;
-          case AgentScopeRuntimeMessageType.MCP_APPROVAL_REQUEST:
-            return <Tool key={item.id} data={item} isApproval={true} />;
-          case AgentScopeRuntimeMessageType.REASONING:
-            return <Reasoning key={item.id} data={item} />;
-          case AgentScopeRuntimeMessageType.ERROR:
-            return <Error key={item.id} data={item} />;
-          case AgentScopeRuntimeMessageType.HEARTBEAT:
-            return null;
-          default:
-            console.warn(`[WIP] Unknown message type: ${item.type}`);
-            return null;
-        }
-      })}
+        >
+          {groupedMessages.process.map(renderResponseItem)}
+        </ProcessDisclosure>
+      )}
+      {groupedMessages.direct.map(renderResponseItem)}
       {reasoningFallbackText && <Markdown content={reasoningFallbackText} />}
       {props.data.error && <Error data={props.data.error} />}
       <Actions {...props} />

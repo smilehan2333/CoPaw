@@ -50,6 +50,61 @@ def test_root_and_agent_config_parse_hook_matcher_groups() -> None:
     assert agent_handler.once is True
 
 
+def test_config_parses_handler_conversation_snapshot_options() -> None:
+    hook_data = {
+        "enabled": True,
+        "events": {
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "id": "prompt-policy",
+                            "type": "prompt",
+                            "prompt": "Review current conversation.",
+                            "includeConversationSnapshot": True,
+                            "conversationSnapshotLimit": 75,
+                        },
+                    ],
+                },
+            ],
+            "PreToolUse": [
+                {
+                    "hooks": [
+                        {
+                            "id": "http-policy",
+                            "type": "http",
+                            "url": "https://hooks.example.test/policy",
+                            "includeConversationSnapshot": True,
+                        },
+                    ],
+                },
+            ],
+        },
+    }
+
+    root = Config.model_validate({"hooks": hook_data})
+    agent = AgentProfileConfig.model_validate(
+        {
+            "id": "agent-1",
+            "name": "Agent",
+            "hooks": hook_data,
+        },
+    )
+
+    root_prompt = root.hooks.events[HookEventName.USER_PROMPT_SUBMIT][0].hooks[
+        0
+    ]
+    root_http = root.hooks.events[HookEventName.PRE_TOOL_USE][0].hooks[0]
+    agent_prompt = agent.hooks.events[HookEventName.USER_PROMPT_SUBMIT][
+        0
+    ].hooks[0]
+    assert root_prompt.include_conversation_snapshot is True
+    assert root_prompt.conversation_snapshot_limit == 75
+    assert root_http.include_conversation_snapshot is True
+    assert root_http.conversation_snapshot_limit == 50
+    assert agent_prompt.include_conversation_snapshot is True
+
+
 def test_config_rejects_unsupported_mvp_hook_handler_type() -> None:
     with pytest.raises(ValidationError):
         Config.model_validate(

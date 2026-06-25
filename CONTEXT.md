@@ -100,9 +100,17 @@ _Avoid_: model cache, global provider list, system model config
 The active LLM selection for a tenant, used by agent work when no narrower **Execution Model Slot** is specified.
 _Avoid_: global model, system default model
 
+**Empty Model Output**:
+A model-call outcome where the provider call succeeds but returns no usable assistant content for the runtime to continue or complete agent work. Text, tool-use, structured content, and reasoning content are all usable model content; empty strings, whitespace-only text, empty lists, and missing content are not. **Empty Model Output** is scoped to model-call handling, not to a whole Scheduled Run or chat turn that merely ends with no visible text.
+_Avoid_: output_len=0, blank reply, empty cron output
+
 **Source System Configuration**:
 A source-scoped runtime configuration surface for behavior shared by requests from the same external source. It is not a tenant configuration and does not describe user, organization, or workspace identity.
 _Avoid_: system feature configuration, tenant config, user config
+
+**Runtime Request Identity**:
+The tenant and source context that determines which runtime configuration and model selection a request observes. One **Runtime Request Identity** resolves to one **Tenant Provider Configuration** view for provider and active-model reads.
+_Avoid_: cache key, auth header set, iframe context
 
 **Mandatory Console Channel**:
 The built-in **Console Channel** is a runtime invariant that is always treated as enabled for every agent and tenant, including when no explicit channel entry has been saved yet. Users may configure its other fields, but persisted, imported, or interactive configuration must not disable it.
@@ -131,6 +139,26 @@ _Avoid_: tool result compression configuration
 **Tool Call Status**:
 The user-visible lifecycle state of one user-visible tool invocation during a Main Agent run. A **Tool Call Status** describes an individual tool invocation as running, successful, or failed; failed means the tool itself failed, not that the user stopped or cancelled the overall Main Agent run. The start of a tool invocation carries the running status, and the tool's returned output carries the successful or failed terminal status.
 _Avoid_: tool event status, frontend tool result, trace status
+
+**Tool Output Frame**:
+A live, user-visible presentation update for textual output produced while one tool invocation is still running. A **Tool Output Frame** belongs to exactly one **Tool Call Status** lifecycle, preserves its output source when known, is ordered only within that tool invocation, is not visible to the Main Agent as model context, and is not itself the final tool result remembered by the Main Agent.
+_Avoid_: partial tool result, durable output chunk, tool memory frame, streaming object result
+
+**Live Tool Output Area**:
+The user-visible region inside a tool card where **Tool Output Frames** for that tool invocation are rendered during execution. A **Live Tool Output Area** is part of the tool presentation, not a separate assistant message in the conversation, and the final tool result becomes the card's authoritative output when it arrives.
+_Avoid_: log chat message, separate output bubble, global tool log
+
+**Terminal Tool Result Precedence**:
+The rule that a successful or failed final tool result replaces the **Live Tool Output Area** as the authoritative tool-card output. If a tool is cancelled without a final result, the card may keep the last live output as cancellation context.
+_Avoid_: live output as final result, partial result precedence
+
+**Live Tool Output Guard**:
+The narrow runtime protection applied before **Tool Output Frames** are sent for live presentation. A **Live Tool Output Guard** controls live output eligibility, live display limits, live replay limits, source preservation, and required redaction for real-time frames without replacing the existing final tool-result rules.
+_Avoid_: tool output policy, final result policy, historical compaction policy
+
+**Live Stream Replay**:
+The best-effort restoration of live presentation events for a Main Agent run that is still active when the user reconnects. **Live Stream Replay** may include **Tool Output Frames** from the active run, but it is not historical recovery after the run has ended.
+_Avoid_: chat history replay, durable tool log, completed-run output restore
 
 **Tool Error Summary**:
 A user-visible, bounded explanation attached to a failed **Tool Call Status**. A **Tool Error Summary** is not an audit record, diagnostic log, or full raw tool failure.
@@ -168,6 +196,10 @@ _Avoid_: mandatory trace span linkage, uncorrelated hook log
 The versioned JSON shape inside a **Hook Telemetry Log Message**. The schema records correlation fields, boundary-level outcome fields, and handler-level details while excluding raw hook payloads by default.
 _Avoid_: ad-hoc log fields, raw payload schema, trace span schema
 
+**Application Log Output Pipeline**:
+The operational path that carries Swe application log records from runtime emission to process-visible outputs. An **Application Log Output Pipeline** transports ordinary and structured log records without changing their domain meaning or schema.
+_Avoid_: telemetry schema, audit log, business operation log, tool output frame
+
 **Hook Boundary Outcome**:
 The merged result of one Hook Runtime boundary after all matching handlers have been resolved and combined.
 _Avoid_: handler result, raw hook output, final log line
@@ -179,6 +211,14 @@ _Avoid_: hook boundary outcome, raw handler payload
 **Hook Payload Preview**:
 A redacted and size-bounded representation of hook-adjacent text or structured data used for diagnosis without retaining the original payload.
 _Avoid_: raw prompt, raw tool input, raw tool output, full updated input
+
+**Current Tool Response**:
+The successful output produced by the current tool invocation for the active `PostToolUse` boundary. A **Current Tool Response** is the tool's business output, not the full persisted `tool_result` block and not a **Hook Conversation Snapshot**.
+_Avoid_: full tool result block, conversation snapshot, AgentScope acting return value
+
+**Hook Conversation Snapshot**:
+A bounded hook-facing snapshot of the current session's message list at one Hook Runtime boundary, including normal user, assistant, tool-call, and tool-result messages while excluding reasoning content. A **Hook Conversation Snapshot** is not the saved transcript file and is not the full Agent state.
+_Avoid_: full context, transcript contents, agent state dump, reasoning trace
 
 **Session Skill Freshness**:
 The cross-turn behavior that determines when a chat session starts using updated skill content. In this context, **Session Skill Freshness** means skill changes take effect on the next turn, not during an in-flight turn.
@@ -211,6 +251,50 @@ _Avoid_: user-visible message, persistent banner, historical chat message, silen
 **Confirmed Skill Association**:
 The point at which a skill becomes part of the session's durable dependency set because the runtime actually activated it, rather than merely suspecting it. Only a **Confirmed Skill Association** can add a skill to the **Session Associated Skill Set**.
 _Avoid_: low-confidence guess, enabled-skill membership, possible skill match
+
+**Market Skill Owner Set**:
+The current set of users who own a market skill within one source, as resolved by market skill owner reverse lookup. A **Market Skill Owner Set** is based on current user skill state and is not a historical distribution audit; readiness workflows resolve this set server-side so the displayed owner list and checked user set share the same source of truth.
+_Avoid_: assigned users, distribution history, skill install log
+
+**Skill Readiness Skill Id**:
+The `skill_id` value used to find readiness configuration and related scheduled jobs for a market skill. A **Skill Readiness Skill Id** normally comes from the market-provided skill id; before that id exists, the market skill's stable `skill_name` may be used as a fallback value while keeping the field name `skill_id`; allowed values use only letters, digits, underscore, hyphen, dot, and colon.
+_Avoid_: skill_key, display name, version, historical distribution id
+
+**Skill Readiness Configuration**:
+A runtime configuration keyed by **Skill Readiness Skill Id** that declares which readiness checks apply to a market skill and what parameters those checks use. A **Skill Readiness Configuration** is stored as runtime configuration, not as a deployment-local YAML file; source identity belongs to readiness execution and result isolation rather than the base configuration key.
+_Avoid_: static checklist, local YAML, global skill rule
+
+**Skill Readiness Run**:
+One asynchronous execution that checks the full **Market Skill Owner Set** for one **Skill Readiness Skill Id** within a specific source. A **Skill Readiness Run** uses `source_id` to resolve the user set, user runtime directories, scheduled jobs, credentials, and result isolation.
+_Avoid_: configuration lookup, frontend scan, historical distribution audit
+
+**Skill Readiness Run Progress**:
+The observable progress counts for a **Skill Readiness Run**. `failed_users` means users whose readiness result is abnormal, not backend task failures.
+_Avoid_: backend failure count, transport error count
+
+**Skill Readiness Run Status**:
+The lifecycle state of a **Skill Readiness Run** as shown to administrators. `partial` means some user results are available while non-fatal lookup or check failures prevented a fully complete run.
+_Avoid_: backend process status, HTTP request status
+
+**Skill Readiness User Result**:
+The readiness outcome for one user inside a **Skill Readiness Run**. A **Skill Readiness User Result** is abnormal when any configured readiness check for that user fails.
+_Avoid_: tenant health, backend task result, owner lookup row
+
+**Skill Readiness Check Status**:
+The normalized outcome of one readiness check. A check is `pass`, `fail`, or `skip`; technical errors are represented as `fail` with an explanatory message and details rather than a separate status.
+_Avoid_: error status, exception category, backend failure class
+
+**Skill Readiness Check Name**:
+The stable strategy name of one readiness check inside configuration and results. New readiness check types extend this name registry and generic result payloads rather than adding per-check database columns or per-check APIs.
+_Avoid_: KPI, metric column, hard-coded result field
+
+**Profile Identity Block**:
+The fixed user identity section appended to `PROFILE.md` through the agent initialization API, containing fields such as branch id, outlet organization id, position id, and customer manager id. A **Profile Identity Block** is distinct from free-form profile memories or general user preference notes.
+_Avoid_: arbitrary profile content, memory note, full user info API payload
+
+**Skill Readiness Job Binding**:
+The relationship between a **Scheduled Job** and one or more **Skill Readiness Skill Id** values. A paused **Scheduled Job** still counts as a binding, while a disabled job does not count as executable for readiness checks; copied or broadcast jobs preserve the binding unless explicitly changed.
+_Avoid_: skill_key binding, skill distribution record, cron tag
 
 **Missing Associated Skill**:
 An associated skill whose previously recorded directory can no longer be resolved at freshness-check time. In this context, a **Missing Associated Skill** does not trigger a refresh or notice by itself, and its snapshot entry is silently removed.
@@ -356,6 +440,9 @@ Resolved as **Source System Configuration** in this context. The configuration i
 **"Tool Result Compression Switch"**:
 Resolved as controlling **Historical Tool Result Compaction** only. **File Read Truncation** needs an independent switch.
 
+**"PostToolUse tool_response"**:
+Resolved as **Current Tool Response**: the current tool invocation's business output. It must not mean the full persisted `tool_result` block, the AgentScope `_acting()` return value, or data recovered through **Hook Conversation Snapshot**.
+
 **"Immediate Truncation Configuration Placement"**:
 Resolved as sibling configuration under **Source System Configuration**, not nested inside the **Historical Tool Result Compaction** configuration.
 
@@ -364,6 +451,21 @@ Resolved as **Tool Execution Error** for explicit tool-declared failure, with ge
 
 **"Canonical Failed Tool Output Shape"**:
 Resolved as **Structured Tool Failure Result**, using the MCP-style `isError=true` result shape rather than plain-text failure strings.
+
+**"Streaming Tool Output Scope"**:
+Resolved as **Tool Output Frame** support for long-running tools with naturally incremental textual output. Ordinary one-shot tools should not split their final result into artificial frames.
+
+**"Initial Live Tool Output Scope"**:
+Resolved as shell-style terminal tools only. MCP, file-reading, search, browser, and structured business tools do not emit **Tool Output Frames** in the first version.
+
+**"Live Tool Output Limit"**:
+Resolved as a presentation and live-replay protection for the **Live Tool Output Area** only. When the final tool result arrives, the tool card's authoritative output follows the normal final-result rules rather than the live-output limit.
+
+**"Live Tool Output Default Limit"**:
+Resolved as 64KB or 2000 lines for the **Live Tool Output Area**, whichever is reached first. When the limit is exceeded, Swe keeps the most recent live output and shows an explicit omission marker.
+
+**"Tool Output Frame Stream Shape"**:
+Resolved as a dedicated presentation event for **Tool Output Frames**, not a final tool-output message and not a model-visible content delta.
 
 **"Immediate Truncation Defaults"**:
 Resolved as preserving existing runtime behavior when a source has no explicit override. File reads keep their current default limit.
@@ -458,11 +560,29 @@ Resolved as **System Runtime Diagnostic**. The existing lightweight health endpo
 **"Health Endpoint"**:
 Resolved as **Liveness Probe** when referring to `/api/health/health`. It is not a readiness check and does not report dependency availability.
 
+**"output_len=0"**:
+Resolved as **Empty Model Output** only when discussing a successful model call that returns no usable assistant content. Scheduled Run or stream-level `output_len=0` remains an execution symptom and must not be treated as the canonical model-call concept.
+
+**"Thinking-Only Model Output"**:
+Resolved as not being **Empty Model Output**. Reasoning content is usable model content even when no user-visible final text is present.
+
+**"Empty Model Output Retry Count"**:
+Resolved as a fixed single retry for each model call. This retry is independent from normal transient-error LLM retry settings and still applies when normal LLM retry is disabled.
+
+**"Streaming Empty Model Output"**:
+Resolved at the whole-stream boundary. An individual empty stream chunk does not trigger an **Empty Model Output** retry; a completed stream that produced no usable model content triggers one full model-call retry.
+
+**"Exhausted Empty Model Output Retry"**:
+Resolved as an explicit model-call failure. If the fixed single retry also returns **Empty Model Output**, Swe raises a diagnostic error instead of treating the call as successfully completed.
+
 **"Flask Worker Usage"**:
 Resolved as **Request Execution Load**. Swe does not run Flask or a multi-worker web-server pool; the diagnostic reports the load and responsiveness of the single-worker Uvicorn/FastAPI backend instead of tenant-level workload statistics or Supervisor process state.
 
 **"Diagnostic Instance"**:
 Resolved as a **Runtime Instance**, meaning one running Swe service container. It is distinct from the business-facing instance records used for user allocation.
+
+**"Logging System"**:
+Resolved as the **Application Log Output Pipeline** when discussing asynchronous logging output. It does not mean changing **Hook Telemetry Log Message** schema, business operation logs, tracing storage, or **Tool Output Frames**.
 
 ## Example Dialogue
 

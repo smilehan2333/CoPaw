@@ -15,7 +15,10 @@ import { isHistorySessionActive } from "./historySessions";
 import sendIcon from "../../../../assets/icons/new_chat.svg";
 import operateIcon from "../../../../assets/icons/operate.svg";
 import guideImage from "@/assets/others/note.png";
-import { ChatAnywhereSessionsContext } from "@/components/agentscope-chat";
+import {
+  ChatAnywhereSessionsContext,
+  type IAgentScopeRuntimeWebUISession,
+} from "@/components/agentscope-chat";
 import { useAgentStore } from "@/stores/agentStore";
 import sessionApi from "../../sessionApi";
 import { getSessionAgentId } from "../../sessionApi/sessionAgent";
@@ -30,6 +33,10 @@ interface ExtendedHistorySession extends HistorySession {
   channel?: string;
   realId?: string;
 }
+
+type SessionIdentity = Partial<IAgentScopeRuntimeWebUISession> & {
+  realId?: string;
+};
 
 function HistoryIcon() {
   return (
@@ -82,6 +89,7 @@ export interface ChatSidebarProps {
   onTaskRun?: (task: CronJobSpecOutput) => void;
   onTaskResume?: (task: CronJobSpecOutput) => void;
   onTaskDelete?: (task: CronJobSpecOutput) => void;
+  onTaskEdit?: (task: CronJobSpecOutput) => void;
 }
 
 export default function ChatSidebar(props: ChatSidebarProps) {
@@ -94,6 +102,7 @@ export default function ChatSidebar(props: ChatSidebarProps) {
     onTaskRun,
     onTaskResume,
     onTaskDelete,
+    onTaskEdit,
   } = props;
   const navigate = useNavigate();
   const location = useLocation();
@@ -134,15 +143,25 @@ export default function ChatSidebar(props: ChatSidebarProps) {
   currentChatIdRef.current = currentChatId;
 
   // 刷新共享 sessions 状态
-  const refreshSessions = useCallback(async () => {
-    try {
-      const sessionList = await sessionApi.getSessionList();
-      setSessions(mergeConcurrentSessions(sessionList, getSessions(), false));
-      setLoadMoreHistoryFailed(false);
-    } catch {
-      // ignore
-    }
-  }, [getSessions, setSessions]);
+  const refreshSessions = useCallback(
+    async (excludedSessions: SessionIdentity[] = []) => {
+      try {
+        const sessionList = await sessionApi.getSessionList();
+        setSessions(
+          mergeConcurrentSessions(
+            sessionList,
+            getSessions(),
+            false,
+            excludedSessions,
+          ),
+        );
+        setLoadMoreHistoryFailed(false);
+      } catch {
+        // ignore
+      }
+    },
+    [getSessions, setSessions],
+  );
 
   const loadMoreSessions = useCallback(async () => {
     if (isLoadingMoreHistory || !sessionApi.hasMoreSessions()) return;
@@ -273,7 +292,7 @@ export default function ChatSidebar(props: ChatSidebarProps) {
   const handleDeleteSession = useCallback(
     (
       sessionId: string,
-      _backendId: string | null,
+      backendId: string | null,
       sessionName: string = "新会话",
     ) => {
       Modal.confirm({
@@ -285,6 +304,9 @@ export default function ChatSidebar(props: ChatSidebarProps) {
         cancelText: "取消",
         cancelButtonProps: { type: "text" },
         onOk: async () => {
+          const removedSession = backendId
+            ? { id: sessionId, realId: backendId }
+            : { id: sessionId };
           await sessionApi.removeSession({ id: sessionId });
 
           if (currentChatIdRef.current === sessionId) {
@@ -296,7 +318,7 @@ export default function ChatSidebar(props: ChatSidebarProps) {
             }
           }
 
-          await refreshSessions();
+          await refreshSessions([removedSession]);
         },
       });
     },
@@ -335,6 +357,7 @@ export default function ChatSidebar(props: ChatSidebarProps) {
             onTaskRun={onTaskRun}
             onTaskResume={onTaskResume}
             onTaskDelete={onTaskDelete}
+            onTaskEdit={onTaskEdit}
             toolbarRef={toolbarRef}
           />
           <ExpandablePanel
@@ -400,6 +423,7 @@ export default function ChatSidebar(props: ChatSidebarProps) {
                 onTaskRun={onTaskRun}
                 onTaskResume={onTaskResume}
                 onTaskDelete={onTaskDelete}
+                onTaskEdit={onTaskEdit}
               />
               <div className="chat-sidebar-history">
                 <div
